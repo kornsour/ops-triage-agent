@@ -105,7 +105,7 @@ To use a real model:
 
 ```bash
 export TRIAGE_LLM_PROVIDER=anthropic        # or openai
-export TRIAGE_LLM_MODEL=claude-opus-4-8     # or gpt-4.1
+export TRIAGE_LLM_MODEL=claude-opus-4-8     # or gpt-5.5
 export ANTHROPIC_API_KEY=...                # or OPENAI_API_KEY
 uv pip install -e ".[anthropic]"            # or .[openai]
 ```
