@@ -38,7 +38,7 @@ build-backend = "hatchling.build"
 packages = ["src/triage"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 testpaths = ["tests"]
 addopts = "-q"
 
