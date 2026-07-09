@@ -61,6 +61,25 @@ crashing — switch roles and retry.
 5. **Evals** — metric cards and a per-scenario table from the latest eval
    report. If no report exists yet, run `make eval` from the repo root.
 
+## Static demo mode (GitHub Pages)
+
+Built with `VITE_DEMO=1`, the console runs against an **in-browser mock** instead
+of the `/api` backend, so it can be hosted as a static site with no server — see
+the [live demo](https://kornsour.github.io/ops-triage-agent/). The mock
+([`src/demo/mockApi.ts`](src/demo/mockApi.ts)) is backed by fixtures
+([`src/demo/fixtures.json`](src/demo/fixtures.json)) generated from the real
+backend; approvals mutate in-memory so the approve/deny flow stays live.
+
+```bash
+npm run dev:demo     # dev server in demo mode (no backend needed)
+npm run build:demo   # static build for Pages (base path /ops-triage-agent/)
+
+# regenerate the fixtures from the backend after changing it:
+uv run python scripts/gen_fixtures.py   # from the repo root
+```
+
+The Pages deploy runs from [`.github/workflows/pages.yml`](../.github/workflows/pages.yml).
+
 ## Tech notes
 
 - Minimal dependencies: React 18 + plain CSS only (no UI kit, Tailwind, Redux,
