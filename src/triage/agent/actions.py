@@ -54,8 +54,15 @@ class ActionExecutor:
         return retry(lambda: effect(self.db, **args), attempts=3, sleep=self.sleep_fn)
 
     def request(
-        self, *, run_id: str, principal: Principal, action: str, args: dict[str, Any]
+        self, *, run_id: str, principal: Principal, action: str, args: dict[str, Any],
+        force_approval: bool = False,
     ) -> dict[str, Any]:
+        """Route a guarded action through the controls.
+
+        `force_approval` holds even a normally auto-approved action for human
+        review — used when the triage input was flagged as untrusted (e.g. a
+        prompt-injection attempt), so nothing can auto-execute off tainted input.
+        """
         if action not in ACTION_EFFECTS:
             raise ValueError(f"unknown action {action!r}")
         require_role(principal, "operator")
@@ -68,7 +75,7 @@ class ActionExecutor:
             return {"status": "replayed", "action": action,
                     "result": self.idempotency.get(key)}
 
-        if auto_approve:
+        if auto_approve and not force_approval:
             result = self._run_effect(action, args)
             self.idempotency.remember(key, result)
             self.audit.record(actor=principal.name, action=action, target=str(args),
@@ -76,13 +83,18 @@ class ActionExecutor:
                               metadata={"run_id": run_id, "risk": risk, "auto_approved": True})
             return {"status": "executed", "action": action, "risk": risk, "result": result}
 
+        held_reason = "untrusted_content" if (force_approval and auto_approve) else None
         self.approvals.create(approval_id=key, run_id=run_id, action=action,
                               args=args, risk=risk, requested_by=principal.name)
         self.audit.record(actor=principal.name, action=action, target=str(args),
                           outcome="approval_requested",
-                          metadata={"run_id": run_id, "risk": risk, "approval_id": key})
-        return {"status": "pending_approval", "action": action, "risk": risk,
-                "approval_id": key}
+                          metadata={"run_id": run_id, "risk": risk, "approval_id": key,
+                                    "held_reason": held_reason})
+        out = {"status": "pending_approval", "action": action, "risk": risk,
+               "approval_id": key}
+        if held_reason:
+            out["held_reason"] = held_reason
+        return out
 
     def execute_approved(self, *, approval_id: str, principal: Principal) -> dict[str, Any]:
         require_role(principal, "admin")

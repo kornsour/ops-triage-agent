@@ -16,7 +16,7 @@ deployed inside their environment.
                                                  ▼
                               ┌──────────────────────────────────────────┐
    other MCP clients ───────▶ │              Agent core                  │
-   (Claude Desktop, IDEs)     │  planner → tools → responder             │
+   (Claude Desktop, IDEs)     │  guardrail → tool-calling loop → answer   │
         via MCP server        │                                          │
                               │   ┌────────────┐   ┌───────────────────┐ │
                               │   │   RAG      │   │ Enterprise control│ │
@@ -44,22 +44,22 @@ deployed inside their environment.
 1. **Ingress / authN.** The UI (or an MCP client) calls the backend with an
    `X-API-Key`. The key resolves to a `Principal` with a role
    (`viewer` < `operator` < `admin`). Running triage requires `operator`.
-2. **Retrieve.** The ticket text is embedded and matched against the governed
-   runbook index; the top-k runbooks become grounding context.
-3. **Plan (LLM call 1).** The planner classifies the ticket (category, severity),
-   produces an ordered plan, and recommends at most one guarded action.
-4. **Gather.** Read tools hit the real ticket database for requester history and
-   directory records — context the model can't invent.
-5. **Respond (LLM call 2).** The responder drafts a reply grounded *only* in the
-   retrieved runbooks and cites them. A grounding check rejects any citation not
-   in the retrieved set.
-6. **Act.** Any recommended guarded action is routed through the
+2. **Guardrail.** The ticket text is scanned for prompt-injection patterns. A hit
+   is recorded on the run and forces every subsequent action through approval.
+3. **Tool-calling loop.** Each turn the model returns JSON that either calls read
+   tools (`search_runbooks` over the governed index, `lookup_ticket_history`,
+   `lookup_user`) or finalizes. The runner executes the calls, feeds observations
+   back, and repeats up to a step budget. The final answer carries the
+   classification, a reply grounded *only* in retrieved runbooks with citations,
+   and at most one recommended guarded action. A grounding check rejects any
+   citation not in the set the tools actually returned.
+4. **Act.** Any recommended guarded action is routed through the
    `ActionExecutor`: auth → rate limit → idempotency → approval policy → retry →
-   audit. Low-risk actions auto-execute; medium/high-risk actions return
-   `pending_approval`.
-7. **Approve (separate request).** An admin approves via the UI/MCP; the executor
+   audit. Low-risk actions auto-execute; medium/high-risk actions — and any action
+   from a run flagged for injection — return `pending_approval`.
+5. **Approve (separate request).** An admin approves via the UI/MCP; the executor
    runs the effect once (idempotent) and writes the execution to the audit chain.
-8. **Observe.** Latency per step, token usage, and USD cost are recorded on the
+6. **Observe.** Latency per step, token usage, and USD cost are recorded on the
    run; the structured run record is persisted.
 
 ## 3. Components and their production swaps
@@ -83,6 +83,8 @@ it is a configuration/adapter change, not a rewrite.
 - **Least privilege** at two layers: human roles (RBAC) and per-action risk
   policy.
 - **Human-in-the-loop** for any identity/access mutation.
+- **Untrusted input** — ticket content is treated as data, not instructions;
+  injection attempts are flagged and force actions to approval.
 - **Tamper-evident audit** of every request, decision, and execution.
 - **Idempotency** so retries and re-runs never double-apply an effect.
 - **Data lineage** on every retrieved document (source, hash, ingest time,
@@ -109,4 +111,5 @@ it is a configuration/adapter change, not a rewrite.
 | Runaway agent loop | per-principal rate limiting; per-run cost/latency budget |
 | Model degradation | eval gate + drift detection block the release |
 | Stale runbook | ingestion lineage surfaces a staleness warning |
+| Prompt injection in a ticket | guardrail flags the run and forces actions to approval |
 | Audit tampering | chain verification detects edits/reorder/deletion |

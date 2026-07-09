@@ -1,7 +1,7 @@
 [project]
 name = "ops-triage-agent"
 version = "0.1.0"
-description = "Enterprise agentic IT/Ops support-triage system: multi-agent tool use, an MCP server with enterprise controls, RAG, and an eval-gated release pipeline."
+description = "Agentic IT/Ops support-triage system: a tool-calling agent, an MCP server with enterprise controls, RAG, prompt-injection handling, and an eval-gated release pipeline."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

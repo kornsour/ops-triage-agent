@@ -7,12 +7,12 @@ from triage.enterprise.auth import AuthError, authenticate
 def test_catalog_includes_actions_and_approve(seeded):
     core = MCPCore(authenticate("demo-operator-key"))
     names = {t["name"] for t in core.list_tools()}
-    assert {"retrieve_runbook", "reset_password", "grant_access", "approve_action"} <= names
+    assert {"search_runbooks", "reset_password", "grant_access", "approve_action"} <= names
 
 
 def test_read_tool_via_mcp(seeded):
     core = MCPCore(authenticate("demo-operator-key"))
-    out = core.call_tool("retrieve_runbook", {"query": "locked out password"})
+    out = core.call_tool("search_runbooks", {"query": "locked out password"})
     assert out["result"][0]["doc_id"] == "kb-password-reset"
 
 

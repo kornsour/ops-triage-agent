@@ -2,14 +2,14 @@
 
 A [Model Context Protocol](https://modelcontextprotocol.io) server that exposes
 the triage tools to any MCP-compatible client (Claude Desktop, IDEs, other
-agents) — but unlike a typical MCP demo, **every call goes through the
-enterprise-controls layer**.
+agents). Every call goes through the same enterprise-controls layer the
+in-process agent uses.
 
 ## Tools
 
 | Tool | Kind | Min role | Behavior |
 | --- | --- | --- | --- |
-| `retrieve_runbook` | read | viewer | Semantic search over the knowledge base |
+| `search_runbooks` | read | viewer | Semantic search over the knowledge base |
 | `lookup_ticket_history` | read | viewer | Prior tickets for a requester |
 | `lookup_user` | read | viewer | Directory record |
 | `reset_password` | action | operator | **medium-risk → returns `pending_approval`** |

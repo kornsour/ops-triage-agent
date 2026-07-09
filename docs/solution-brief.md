@@ -1,8 +1,7 @@
 # Solution Brief — Agentic IT/Ops Support Triage
 
-*One-page, customer-facing framing. The kind of brief a Solutions Architect uses
-to translate a business problem into a deployable design for an executive
-audience.*
+*A one-page framing that translates the business problem into a deployable
+design.*
 
 ---
 
@@ -27,8 +26,9 @@ trail.
 ### How it works (at a glance)
 
 ```
-ticket → retrieve runbook → classify & plan → check history
-       → draft grounded reply → safe action auto-runs / risky action waits for approval
+ticket → scan for untrusted input → agent loop (search runbooks, check history,
+       look up requester) → grounded reply → safe action auto-runs /
+       risky or tainted action waits for approval
 ```
 
 ### Why it's safe to deploy
@@ -36,6 +36,7 @@ ticket → retrieve runbook → classify & plan → check history
 | Concern an exec will raise | How the design answers it |
 | --- | --- |
 | "Will it do something it shouldn't?" | Every action passes one controlled gate; identity/access changes require admin approval. |
+| "Can a user trick it via the ticket text?" | Ticket content is treated as untrusted; injection attempts are flagged and force every action to human approval. |
 | "Can we prove what it did?" | Hash-chained audit trail of every request, decision, and execution. |
 | "Will quality quietly slip?" | Releases are blocked by an evaluation gate with a hard safety invariant. |
 | "Will it hallucinate answers?" | Replies are grounded in retrieved runbooks and citation-checked. |
@@ -57,12 +58,12 @@ Model Context Protocol, so the same governed capabilities are available to other
 internal agents and assistants. A pilot runs against a read-only copy of one
 ticket category; expand category-by-category as eval coverage grows.
 
-### Why this team / approach
+### Approach
 
-The hard part of enterprise agents isn't the model — it's the controls,
-governance, and evaluation around it. This solution leads with that layer:
-least-privilege RBAC, risk-tiered human approval, tamper-evident audit, data
-lineage, and eval-gated releases, all demonstrated in a working full-stack
-system. See [`reference-architecture.md`](reference-architecture.md) for the
-deployable design and [`architecture-decision-record.md`](architecture-decision-record.md)
+Most of the work in an enterprise agent is the layer around the model: the
+controls, governance, and evaluation. This design covers that layer directly —
+least-privilege RBAC, risk-tiered human approval, prompt-injection handling,
+tamper-evident audit, data lineage, and eval-gated releases — in a working
+full-stack system. See [`reference-architecture.md`](reference-architecture.md)
+for the deployable design and [`architecture-decision-record.md`](architecture-decision-record.md)
 for the decisions and trade-offs behind it.

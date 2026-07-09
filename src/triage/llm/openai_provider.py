@@ -1,7 +1,7 @@
 """OpenAI adapter. Requires `pip install ops-triage-agent[openai]` and OPENAI_API_KEY.
 
-Uses JSON-mode so the planner reliably receives structured output. The rest of
-the system is identical to the mock path.
+Uses JSON-mode so each turn of the tool-calling loop reliably receives structured
+output. The rest of the system is identical to the mock path.
 """
 
 from __future__ import annotations

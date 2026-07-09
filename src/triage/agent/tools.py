@@ -28,8 +28,8 @@ class ToolSpec:
 # --- Read tools -------------------------------------------------------------
 
 READ_TOOLS = {
-    "retrieve_runbook": ToolSpec(
-        "retrieve_runbook", "Semantic search over the runbook knowledge base.",
+    "search_runbooks": ToolSpec(
+        "search_runbooks", "Semantic search over the runbook knowledge base.",
         "read", {"query": "free text"}),
     "lookup_ticket_history": ToolSpec(
         "lookup_ticket_history", "Prior tickets from the same requester.",
@@ -45,7 +45,7 @@ class ReadTools:
         self.db = db
         self.retriever = retriever
 
-    def retrieve_runbook(self, query: str, k: int = 3) -> list[dict[str, Any]]:
+    def search_runbooks(self, query: str, k: int = 3) -> list[dict[str, Any]]:
         return [h.__dict__ for h in self.retriever.retrieve(query, k=k)]
 
     def lookup_ticket_history(self, requester: str, exclude_id: str | None = None) -> list[dict[str, Any]]:

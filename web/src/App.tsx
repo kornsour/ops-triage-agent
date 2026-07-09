@@ -28,6 +28,18 @@ function loadRole(): Role {
   return "operator";
 }
 
+/** Runs are shareable: `#run=<run_id>` deep-links straight to that run's detail. */
+function runFromHash(): string | null {
+  const m = window.location.hash.match(/run=([\w-]+)/);
+  return m ? m[1] : null;
+}
+
+/** Views are linkable too: `#tab=evals` opens that tab on load. */
+function tabFromHash(): Tab | null {
+  const m = window.location.hash.match(/tab=(queue|run|approvals|audit|evals)/);
+  return m ? (m[1] as Tab) : null;
+}
+
 function HealthPill({ role }: { role: Role }) {
   const [health, setHealth] = useState<Health | null>(null);
   const [ok, setOk] = useState(true);
@@ -77,8 +89,9 @@ function HealthPill({ role }: { role: Role }) {
 
 export default function App() {
   const [role, setRole] = useState<Role>(loadRole);
-  const [tab, setTab] = useState<Tab>("queue");
-  const [activeRun, setActiveRun] = useState<string | null>(null);
+  const initialRun = runFromHash();
+  const [tab, setTab] = useState<Tab>(tabFromHash() ?? (initialRun ? "run" : "queue"));
+  const [activeRun, setActiveRun] = useState<string | null>(initialRun);
 
   useEffect(() => {
     localStorage.setItem(ROLE_KEY, role);
@@ -87,6 +100,7 @@ export default function App() {
   function handleRunComplete(runId: string) {
     setActiveRun(runId);
     setTab("run");
+    window.location.hash = `run=${runId}`;
   }
 
   return (

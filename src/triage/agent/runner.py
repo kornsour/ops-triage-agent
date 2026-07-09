@@ -1,4 +1,11 @@
-"""TriageRunner — orchestrates one end-to-end triage run and emits a trace."""
+"""TriageRunner — orchestrates one end-to-end triage run and emits a trace.
+
+The agent runs a tool-calling loop: the model decides which read tools to call,
+the runner executes them and feeds the observations back, and the loop repeats
+until the model returns a final answer (or the step budget is hit). Any
+recommended guarded action is then routed through the enterprise-controls
+executor. Untrusted-content detection forces every action through human approval.
+"""
 
 from __future__ import annotations
 
@@ -9,15 +16,16 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from triage.agent.actions import ActionExecutor
-from triage.agent.prompts import PROMPT_VERSION, plan_messages, respond_messages
+from triage.agent.prompts import PROMPT_VERSION, agent_messages, observation_message
 from triage.agent.tools import ACTION_EFFECTS, ReadTools
 from triage.config import Settings, get_settings
 from triage.data.db import Ticket, TicketDB
 from triage.enterprise.approvals import ApprovalStore
 from triage.enterprise.audit import AuditLog
 from triage.enterprise.auth import AuthError, Principal
+from triage.enterprise.guardrails import scan as scan_injection
 from triage.llm import get_provider
-from triage.llm.base import LLMProvider, LLMResponse
+from triage.llm.base import LLMProvider, LLMResponse, Message
 from triage.observability.logging import get_logger, log_event
 from triage.observability.metrics import RunMetrics, Timer
 from triage.rag.retriever import Retriever
@@ -49,10 +57,11 @@ class TriageResult:
     metrics: dict[str, Any]
     trace: list[TraceStep] = field(default_factory=list)
     prompt_version: str = PROMPT_VERSION
+    injection_detected: bool = False
+    injection_signals: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        d = asdict(self)
-        return d
+        return asdict(self)
 
 
 def _parse(resp: LLMResponse) -> dict[str, Any]:
@@ -64,19 +73,23 @@ def _parse(resp: LLMResponse) -> dict[str, Any]:
         return {}
 
 
-def _action_args(action: str, ticket: Ticket, plan: dict[str, Any], draft: str) -> dict[str, Any]:
+def _action_args(action: str, ticket: Ticket, category: str, draft: str) -> dict[str, Any]:
     if action == "reset_password":
         return {"email": ticket.requester}
     if action == "grant_access":
         return {"email": ticket.requester, "resource": ticket.subject}
     if action == "escalate":
-        team = "sre-on-call" if plan.get("category") == "incident" else "it-field-team"
+        team = "sre-on-call" if category == "incident" else "it-field-team"
         return {"ticket_id": ticket.id, "team": team}
     if action == "post_reply":
         return {"ticket_id": ticket.id, "text": draft}
     if action == "close_ticket":
         return {"ticket_id": ticket.id}
     return {}
+
+
+def _short(args: dict[str, Any]) -> str:
+    return ", ".join(f"{k}={v}" for k, v in args.items())[:60]
 
 
 class TriageRunner:
@@ -100,70 +113,90 @@ class TriageRunner:
             executor = ActionExecutor(self.db, audit, approvals)
         self.executor = executor
 
+    def _dispatch(self, name: str, args: dict[str, Any], ticket: Ticket) -> tuple[Any, list[str]]:
+        """Execute one read tool. Returns (observation, retrieved_runbook_ids)."""
+        if name == "search_runbooks":
+            hits = self.retriever.retrieve(args.get("query", ""), k=3)
+            ids = [h.doc_id for h in hits]
+            return Retriever.format_context(hits), ids
+        if name == "lookup_ticket_history":
+            requester = args.get("requester") or ticket.requester
+            history = self.read.lookup_ticket_history(requester, ticket.id)
+            return {"prior_tickets": len(history),
+                    "subjects": [h["subject"] for h in history]}, []
+        if name == "lookup_user":
+            email = args.get("email") or ticket.requester
+            return {"user": self.read.lookup_user(email)}, []
+        return {"error": f"unknown tool {name!r}"}, []
+
     def run(self, ticket: Ticket, principal: Principal, run_id: str | None = None) -> TriageResult:
         run_id = run_id or f"run-{uuid.uuid4().hex[:12]}"
         metrics = RunMetrics()
         timer = Timer(metrics)
         trace: list[TraceStep] = []
-        ticket_text = f"{ticket.subject}\n{ticket.body}"
 
-        # 1) Retrieve candidate runbooks.
-        with timer.step("retrieve"):
-            hits = self.retriever.retrieve(ticket_text, k=3)
-            context = Retriever.format_context(hits)
-            titles = "\n".join(f"[{h.doc_id}] {h.title} (score={h.score})" for h in hits) or "(none)"
-        retrieved_ids = [h.doc_id for h in hits]
-        trace.append(TraceStep("retrieve", metrics.steps["retrieve"],
-                               {"hits": retrieved_ids, "top_score": hits[0].score if hits else 0.0}))
+        # 0) Guardrail — scan the untrusted ticket for prompt-injection attempts.
+        with timer.step("guard"):
+            signals = scan_injection(f"{ticket.subject}\n{ticket.body}")
+        injection = bool(signals)
+        trace.append(TraceStep("guard", metrics.steps["guard"],
+                               {"injection_detected": injection, "signals": signals}))
 
-        # 2) Plan (LLM call #1).
-        with timer.step("plan"):
-            presp = self.provider.complete(plan_messages(ticket_text, titles), json_schema={"type": "object"})
-            plan = _parse(presp)
-            metrics.add_usage(presp.usage.input_tokens, presp.usage.output_tokens, presp.usage.usd)
-        category = plan.get("category", "general")
-        severity = plan.get("severity", "low")
-        recommended_action = plan.get("recommended_action")
-        trace.append(TraceStep("plan", metrics.steps["plan"],
-                               {"category": category, "severity": severity,
-                                "recommended_action": recommended_action,
-                                "plan": plan.get("plan", [])}))
+        # 1) Tool-calling loop — the model chooses read tools until it finalizes.
+        messages: list[Message] = agent_messages(ticket)
+        retrieved_ids: list[str] = []
+        plan: list[str] = []
+        final: dict[str, Any] = {}
+        for i in range(self.settings.max_agent_steps):
+            key = f"llm_{i}"
+            with timer.step(key):
+                resp = self.provider.complete(messages, json_schema={"type": "object"})
+            metrics.add_usage(resp.usage.input_tokens, resp.usage.output_tokens, resp.usage.usd)
+            data = _parse(resp)
+            calls = data.get("tool_calls") or []
 
-        # 3) Gather context with read tools (real DB reads).
-        with timer.step("gather"):
-            history = self.read.lookup_ticket_history(ticket.requester, ticket.id)
-            user = None
-            if category in {"access_password", "access_request"}:
-                user = self.read.lookup_user(ticket.requester)
-        trace.append(TraceStep("gather", metrics.steps["gather"],
-                               {"prior_tickets": len(history),
-                                "user_found": user is not None,
-                                "repeat_requester": len(history) > 0}))
+            if calls and "final" not in data:
+                observations: list[dict[str, Any]] = []
+                for call in calls:
+                    name, args = call.get("name", ""), call.get("args", {}) or {}
+                    obs, ids = self._dispatch(name, args, ticket)
+                    retrieved_ids.extend(ids)
+                    observations.append({"tool": name, "args": args, "result": obs})
+                    plan.append(f"{name}({_short(args)})")
+                trace.append(TraceStep("reason", metrics.steps[key],
+                                       {"reasoning": data.get("reasoning", ""),
+                                        "tools": [c.get("name") for c in calls]}))
+                messages.append(Message("assistant", resp.text))
+                messages.append(observation_message(observations))
+                continue
 
-        # 4) Respond (LLM call #2).
-        with timer.step("respond"):
-            rresp = self.provider.complete(respond_messages(ticket_text, context), json_schema={"type": "object"})
-            rdata = _parse(rresp)
-            metrics.add_usage(rresp.usage.input_tokens, rresp.usage.output_tokens, rresp.usage.usd)
-        draft_reply = rdata.get("draft_reply", "")
-        citations = rdata.get("citations", [])
-        confidence = float(rdata.get("confidence", 0.0))
+            final = data.get("final", data)
+            plan.append("draft_response")
+            trace.append(TraceStep("respond", metrics.steps[key],
+                                   {"citations": final.get("citations", []),
+                                    "confidence": final.get("confidence", 0.0)}))
+            break
+
+        category = final.get("category", "general")
+        severity = final.get("severity", "low")
+        draft_reply = final.get("draft_reply", "")
+        citations = final.get("citations", [])
+        confidence = float(final.get("confidence", 0.0))
+        recommended_action = final.get("recommended_action")
         grounded = bool(citations) and set(citations).issubset(set(retrieved_ids))
-        trace.append(TraceStep("respond", metrics.steps["respond"],
-                               {"citations": citations, "confidence": confidence,
-                                "grounded": grounded}))
 
-        # 5) Act — route any guarded action through the enterprise-controls executor.
+        # 2) Act — route any guarded action through the enterprise-controls executor.
         action: dict[str, Any] = {"name": recommended_action, "status": "none"}
         status = "completed"
         if recommended_action in ACTION_EFFECTS:
-            args = _action_args(recommended_action, ticket, plan, draft_reply)
+            args = _action_args(recommended_action, ticket, category, draft_reply)
             action["args"] = args
             with timer.step("act"):
                 try:
                     res = self.executor.request(
                         run_id=run_id, principal=principal,
                         action=recommended_action, args=args,
+                        force_approval=injection,
                     )
                     action.update(res)
                     if res["status"] == "pending_approval":
@@ -174,20 +207,21 @@ class TriageRunner:
             trace.append(TraceStep("act", metrics.steps.get("act", 0.0),
                                    {"action": recommended_action, "status": action["status"]}))
 
-        # 6) Budget enforcement.
+        # 3) Budget enforcement.
         if metrics.usd > self.settings.max_usd_per_run or metrics.total_ms > self.settings.max_latency_ms:
             status = "budget_exceeded"
 
         result = TriageResult(
             run_id=run_id, ticket_id=ticket.id, status=status,
-            category=category, severity=severity, summary=plan.get("summary", ""),
-            plan=plan.get("plan", []), draft_reply=draft_reply, citations=citations,
+            category=category, severity=severity, summary=final.get("summary", ""),
+            plan=plan, draft_reply=draft_reply, citations=citations,
             confidence=confidence, grounded=grounded, action=action,
             metrics=metrics.to_dict(), trace=trace,
+            injection_detected=injection, injection_signals=signals,
         )
         self.db.save_run(run_id, ticket.id, status, result.to_dict())
         log_event(logger, logging.INFO, "triage_run_complete", run_id=run_id,
                   ticket_id=ticket.id, status=status, category=category,
-                  severity=severity, grounded=grounded, usd=metrics.usd,
-                  total_ms=metrics.total_ms)
+                  severity=severity, grounded=grounded, injection=injection,
+                  usd=metrics.usd, total_ms=metrics.total_ms)
         return result

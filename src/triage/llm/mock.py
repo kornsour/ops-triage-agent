@@ -1,13 +1,16 @@
 """Deterministic, offline mock provider.
 
-This is not a toy stub: it implements genuine keyword/heuristic triage logic so
-that the demo, the test suite, and the eval harness all produce *meaningful* and
-*reproducible* results with zero API keys. Swapping in a real provider (OpenAI /
-Anthropic) is a one-line config change; the agent loop is unchanged.
+It implements keyword/heuristic triage logic so the demo, the test suite, and the
+eval harness produce meaningful, reproducible results with zero API keys. Swapping
+in a real provider (OpenAI / Anthropic) is a one-line config change; the agent
+loop is unchanged.
 
-The mock recognizes two structured tasks emitted by the planner, tagged in the
-prompt with ``[[TASK:plan]]`` and ``[[TASK:respond]]``, and returns JSON that
-conforms to the requested schema.
+The provider participates in the tool-calling loop: on the first turn it asks for
+the read tools it needs (search_runbooks, ticket history, and — for access
+requests — the directory record); once it has seen the observations it returns a
+final answer. Because it is a heuristic and not a model, it gets genuinely hard
+tickets wrong, which is what keeps the eval metrics honest rather than a perfect
+1.0 on every run.
 """
 
 from __future__ import annotations
@@ -43,6 +46,16 @@ _NEGATED_URGENCY = ("not urgent", "no rush", "low priority", "whenever you can")
 def _extract(prompt: str, tag: str) -> str:
     m = re.search(rf"<<<{tag}\n(.*?)\n{tag}>>>", prompt, re.DOTALL)
     return (m.group(1) if m else "").strip()
+
+
+def _field(block: str, name: str) -> str:
+    m = re.search(rf"^{name}:\s*(.*)$", block, re.MULTILINE)
+    return (m.group(1) if m else "").strip()
+
+
+def _body(block: str) -> str:
+    _, _, rest = block.partition("body:")
+    return rest.strip() or block
 
 
 def _contains(haystack: str, phrase: str) -> bool:
@@ -83,28 +96,47 @@ class MockProvider:
         json_schema: dict[str, Any] | None = None,
     ) -> LLMResponse:
         prompt = "\n".join(m.content for m in messages)
-        ticket = _extract(prompt, "TICKET")
-        category, severity, action, matched = _classify(ticket)
+        ticket_block = _extract(prompt, "TICKET")
+        requester = _field(ticket_block, "requester")
+        subject = _field(ticket_block, "subject")
+        body = _body(ticket_block)
+        text_for_class = f"{subject}\n{body}"
+        category, severity, action, matched = _classify(text_for_class)
 
-        if "[[TASK:plan]]" in prompt:
+        seen_observations = "OBSERVATIONS>>>" in prompt
+
+        if not seen_observations:
+            # Turn 1: ask for the context the classification implies we need.
+            calls: list[dict[str, Any]] = [
+                {"name": "search_runbooks", "args": {"query": f"{subject} {body}".strip()}},
+                {"name": "lookup_ticket_history", "args": {"requester": requester}},
+            ]
+            if category in {"access_password", "access_request"}:
+                calls.append({"name": "lookup_user", "args": {"email": requester}})
             payload: dict[str, Any] = {
-                "category": category,
-                "severity": severity,
-                "summary": _summary(ticket),
-                "plan": _plan_steps(category, action),
-                "recommended_action": action,
+                "reasoning": f"Triaged as {category}/{severity}; gathering context "
+                             f"via {len(calls)} read tools before drafting.",
+                "tool_calls": calls,
                 "matched_signals": matched,
             }
-        elif "[[TASK:respond]]" in prompt:
-            context = _extract(prompt, "CONTEXT")
-            citations = re.findall(r"\[(kb-[a-z0-9-]+)\]", context)
-            payload = {
-                "draft_reply": _draft_reply(ticket, context, category, citations),
-                "citations": citations[:3],
-                "confidence": 0.82 if citations else 0.4,
-            }
         else:
-            payload = {"text": "ok"}
+            # Turn 2+: observations are in hand — produce the final answer.
+            # Cite only ids that came back from the tools, not prompt placeholders.
+            obs_text = "\n".join(
+                re.findall(r"<<<OBSERVATIONS\n(.*?)\nOBSERVATIONS>>>", prompt, re.DOTALL)
+            )
+            citations = list(dict.fromkeys(re.findall(r"\[(kb-[a-z0-9-]+)\]", obs_text)))
+            payload = {
+                "final": {
+                    "category": category,
+                    "severity": severity,
+                    "summary": _summary(subject or body),
+                    "draft_reply": _draft_reply(category, citations),
+                    "citations": citations[:3],
+                    "confidence": 0.82 if citations else 0.4,
+                    "recommended_action": action,
+                }
+            }
 
         text = json.dumps(payload, indent=2)
         usage = Usage(
@@ -115,22 +147,12 @@ class MockProvider:
         return LLMResponse(text=text, usage=usage, model=self.model, raw=payload)
 
 
-def _summary(ticket: str) -> str:
-    first = ticket.strip().splitlines()[0] if ticket.strip() else "support request"
+def _summary(text: str) -> str:
+    first = text.strip().splitlines()[0] if text.strip() else "support request"
     return (first[:117] + "...") if len(first) > 120 else first
 
 
-def _plan_steps(category: str, action: str | None) -> list[str]:
-    steps = ["retrieve_runbook", "lookup_ticket_history"]
-    if category in {"access_password", "access_request"}:
-        steps.append("lookup_user")
-    if action:
-        steps.append(f"propose:{action}")
-    steps.append("draft_response")
-    return steps
-
-
-def _draft_reply(ticket: str, context: str, category: str, citations: list[str]) -> str:
+def _draft_reply(category: str, citations: list[str]) -> str:
     cite = f" (see {', '.join(citations[:2])})" if citations else ""
     openings = {
         "incident": "Thanks for flagging this — we're treating it as a potential incident and have escalated to the on-call engineer.",

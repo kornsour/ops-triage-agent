@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     embeddings_provider: str = "hashing"  # hashing | openai
     embeddings_dim: int = 256
 
+    # --- Agent loop ---
+    max_agent_steps: int = 4  # tool-calling turns before the loop is forced to finish
+
     # --- Enterprise controls ---
     api_keys: str = "demo-operator-key:operator,demo-admin-key:admin,demo-viewer-key:viewer"
     max_usd_per_run: float = 0.05
