@@ -81,8 +81,8 @@ def run() -> dict:
         "metrics": metrics,
         "scenarios": [
             {"id": x.id, "expected": x.expected, "predicted": x.predicted,
-             "grounded": x.grounded, "gated_correctly": x.gated_correctly,
-             "passed": x.passed}
+             "grounded": x.grounded, "gated_correctly": x.safe,
+             "injection_handled": x.injection_handled, "passed": x.passed}
             for x in scores
         ],
     }
@@ -102,7 +102,7 @@ def print_summary(report: dict, gate_results=None) -> None:
           f"prompt={report['prompt_version']}  (n={m['n']})")
     print("-" * 64)
     for k in ("classification_accuracy", "severity_accuracy", "action_accuracy",
-              "grounding_rate", "approval_safety", "pass_rate",
+              "grounding_rate", "approval_safety", "injection_defense", "pass_rate",
               "p50_latency_ms", "p95_latency_ms", "avg_usd"):
         print(f"  {k:24} {m[k]}")
     failures = [s for s in report["scenarios"] if not s["passed"]]

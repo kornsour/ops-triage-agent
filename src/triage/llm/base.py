@@ -1,10 +1,10 @@
 """Core LLM types and the provider protocol.
 
-The interface is intentionally small: a single `complete()` that takes messages
-plus an optional JSON schema for structured output, and returns text + token
-usage + a computed USD cost. Tool-calling in this project is orchestrated by the
-planner (it parses structured JSON the model emits) rather than provider-native
-function calling, which keeps the agent loop identical across providers.
+The interface is a single `complete()` that takes messages plus an optional JSON
+schema for structured output, and returns text + token usage + a computed USD
+cost. The tool-calling loop (see agent/runner.py) is driven by structured JSON the
+model emits rather than provider-native function calling, which keeps the loop
+identical across the mock, OpenAI, and Anthropic providers.
 """
 
 from __future__ import annotations

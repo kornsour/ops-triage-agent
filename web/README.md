@@ -1,9 +1,9 @@
 # ops-triage-agent — operator console
 
 A Vite + React + TypeScript dashboard for the `ops-triage-agent` FastAPI
-backend. It is the operator/admin console for the agentic IT/Ops ticket-triage
-system: run triage on a ticket, inspect the multi-step agent trace, work the
-human approval gates (RBAC), verify the tamper-evident audit log, and review
+backend. It is the operator/admin console for the IT/Ops ticket-triage system:
+run triage on a ticket, inspect the agent's tool-calling trace, work the human
+approval gates (RBAC), verify the tamper-evident audit log, and review
 eval/quality metrics.
 
 ## Prerequisites
@@ -50,8 +50,10 @@ crashing — switch roles and retry.
 
 1. **Queue** — all tickets; run triage (operator/admin) to open the run detail.
 2. **Run Detail** — status, classification, summary, a vertical trace timeline
-   (retrieve → plan → gather → respond → act), the draft reply, citation chips,
-   a grounded indicator, and a metrics row. Flags runs awaiting admin approval.
+   (guard → reason → respond → act), the draft reply, citation chips, a grounded
+   indicator, and a metrics row. Flags runs awaiting admin approval, and surfaces
+   a warning when a prompt-injection attempt was detected in the ticket. Runs are
+   shareable via a `#run=<id>` deep link.
 3. **Approvals** — pending approvals (auto-polled). Admins approve/deny with an
    optional reason; the execution result is shown afterward.
 4. **Audit** — the hash-chained audit log with a prominent

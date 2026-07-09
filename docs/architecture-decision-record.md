@@ -39,7 +39,7 @@ that order. Tools expose only the raw effect; nothing calls effects directly.
 **Consequences.** The safety properties are enforced in one auditable place and
 are unit-tested as invariants (e.g. "a viewer can never request an action",
 "a high-risk action is never auto-executed"). The cost is a little indirection
-between the planner and the downstream system.
+between the agent and the downstream system.
 
 ---
 
@@ -84,13 +84,15 @@ chain makes silent single-record edits detectable, which is the common case.
 fine" is not a release criterion.
 
 **Decision.** A golden dataset + scoring harness produces metrics that CI
-enforces as hard gates (`make eval-gate`), including a non-negotiable safety
-invariant (`approval_safety == 1.0`). Reports are persisted and compared run over
-run for drift.
+enforces as hard gates (`make eval-gate`), including two non-negotiable safety
+invariants (`approval_safety == 1.0`, `injection_defense == 1.0`). The set
+includes adversarial cases the offline classifier gets wrong, so accuracy sits
+below 1.0 and the gates have something to catch. Reports are persisted and
+compared run over run for drift.
 
 **Consequences.** Quality regressions block the merge. The golden set must be
-grown and curated — that maintenance is the point, and it mirrors the
-deployment→product feedback loop the role descriptions ask for.
+grown and curated over time; that maintenance is the point, and it mirrors the
+deployment→product feedback loop.
 
 ---
 
@@ -125,3 +127,43 @@ call through the same enterprise-controls executor the in-process agent uses.
 **Consequences.** Any MCP client (Claude Desktop, an IDE, another agent) gets the
 tools *with* the controls intact. The protocol handlers are thin wrappers over a
 synchronous, unit-tested core.
+
+---
+
+## ADR-008 — The agent is a tool-calling loop, not a fixed pipeline
+
+**Date:** 2026-07-08 · **Status:** accepted
+
+**Context.** A fixed "classify then respond" pipeline hard-codes which tools run
+and when, which is not how an agent behaves and does not exercise the loop that a
+real model drives.
+
+**Decision.** The runner runs a ReAct-style loop: each turn the model returns JSON
+that either calls read tools (`search_runbooks`, `lookup_ticket_history`,
+`lookup_user`) or finalizes. The runner executes the calls, feeds observations
+back, and repeats up to a step budget. The same loop and prompts drive the mock,
+OpenAI, and Anthropic providers.
+
+**Consequences.** Tool selection is model-driven and visible in the run trace.
+The trade-off is a bounded number of extra model calls per run; the step budget
+and per-run cost/latency budgets keep that in check. Grounding is still verified
+by the runner (citations must be a subset of what the tools actually returned).
+
+---
+
+## ADR-009 — Ticket text is untrusted; injection attempts force approval
+
+**Date:** 2026-07-08 · **Status:** accepted
+
+**Context.** The agent reads user-authored ticket text and can recommend actions
+that change access. That makes the ticket body a prompt-injection surface.
+
+**Decision.** A guardrail scans each ticket for known injection patterns before
+the loop runs. A hit does not block triage, but it forces every action from that
+run through human approval — even normally auto-executed low-risk actions — and
+flags the run. The eval harness gates on `injection_defense == 1.0`.
+
+**Consequences.** Tainted input can never auto-execute an action, and the signal
+is surfaced to operators and recorded in the audit trail. This is defence in
+depth; the approval gates remain the primary safety boundary and detection is
+pattern-based, not exhaustive.

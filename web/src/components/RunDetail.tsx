@@ -79,6 +79,28 @@ function ResultView({ result, role }: { result: TriageResult; role: Role }) {
         <p className="run-summary">{result.summary}</p>
       </Card>
 
+      {result.injection_detected && (
+        <div className="callout callout-warn" role="status">
+          <strong>Prompt-injection attempt detected.</strong> The ticket contained
+          text trying to steer the agent past its controls
+          {result.injection_signals.length > 0 && (
+            <>
+              {" "}
+              (
+              {result.injection_signals.map((s, i) => (
+                <span key={s}>
+                  {i > 0 ? ", " : ""}
+                  <span className="mono">{s}</span>
+                </span>
+              ))}
+              )
+            </>
+          )}
+          . Triage still ran, but every action from this run is forced through
+          human approval — nothing auto-executes off tainted input.
+        </div>
+      )}
+
       {awaitingApproval && (
         <div className="callout callout-warn" role="status">
           <strong>Awaiting admin approval.</strong> This run proposed a{" "}

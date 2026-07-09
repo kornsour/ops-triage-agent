@@ -81,6 +81,8 @@ export interface TriageResult {
   metrics: TriageMetrics;
   trace: TraceStep[];
   prompt_version: string;
+  injection_detected: boolean;
+  injection_signals: string[];
 }
 
 export interface Run {
@@ -140,6 +142,7 @@ export interface EvalMetrics {
   action_accuracy: number;
   grounding_rate: number;
   approval_safety: number;
+  injection_defense: number;
   pass_rate: number;
   p50_latency_ms: number;
   p95_latency_ms: number;

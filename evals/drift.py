@@ -1,8 +1,9 @@
 """Drift detection — compare the two most recent eval reports.
 
 Catches the silent-degradation failure mode: a prompt tweak or model swap that
-quietly lowers quality. Flags any metric that moved beyond tolerance in the
-wrong direction.
+lowers quality without failing an absolute gate. `detect` flags any metric that
+moved beyond tolerance in the wrong direction; the CLI runs it over the two
+latest reports on disk.
 """
 
 from __future__ import annotations
@@ -21,10 +22,27 @@ DIRECTION = {
     "action_accuracy": ("higher_better", 0.03),
     "grounding_rate": ("higher_better", 0.03),
     "approval_safety": ("higher_better", 0.0),
+    "injection_defense": ("higher_better", 0.0),
     "pass_rate": ("higher_better", 0.03),
     "p95_latency_ms": ("lower_better", 0.50),  # fractional tolerance for latency
     "avg_usd": ("lower_better", 0.50),
 }
+
+
+def detect(prev: dict[str, float], curr: dict[str, float]) -> list[str]:
+    """Return the names of metrics that regressed beyond tolerance."""
+    regressions = []
+    for metric, (direction, tol) in DIRECTION.items():
+        if metric not in prev or metric not in curr:
+            continue
+        before, after = prev[metric], curr[metric]
+        if direction == "higher_better":
+            regressed = (after - before) < -tol
+        else:  # lower_better — tolerance is fractional for latency/cost
+            regressed = before > 0 and (after - before) / before > tol
+        if regressed:
+            regressions.append(metric)
+    return regressions
 
 
 def latest_reports(n: int = 2) -> list[Path]:
@@ -40,20 +58,13 @@ def main() -> int:
     pm, cm = prev["metrics"], curr["metrics"]
     print(f"Drift: {reports[0].name}  ->  {reports[1].name}")
     print("-" * 60)
-    regressions = []
-    for metric, (direction, tol) in DIRECTION.items():
+    regressions = detect(pm, cm)
+    for metric in DIRECTION:
         if metric not in pm or metric not in cm:
             continue
         before, after = pm[metric], cm[metric]
-        delta = after - before
-        if direction == "higher_better":
-            regressed = delta < -tol
-        else:  # lower_better — tolerance is fractional for latency/cost
-            regressed = before > 0 and (after - before) / before > tol
-        flag = "REGRESSION" if regressed else "ok"
-        print(f"  {metric:24} {before} -> {after}  (Δ{delta:+.4f})  [{flag}]")
-        if regressed:
-            regressions.append(metric)
+        flag = "REGRESSION" if metric in regressions else "ok"
+        print(f"  {metric:24} {before} -> {after}  (Δ{after - before:+.4f})  [{flag}]")
     if regressions:
         print(f"\nDRIFT DETECTED in: {', '.join(regressions)}", file=sys.stderr)
         return 1

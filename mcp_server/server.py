@@ -1,10 +1,10 @@
-"""An MCP server that exposes the triage tools — with enterprise controls.
+"""An MCP server that exposes the triage tools with the enterprise controls.
 
-This is the differentiator for an enterprise AI platform: a standard Model
-Context Protocol server, but every tool call is mediated by the same controls the
-agent uses. Read tools require a `viewer`; guarded actions require an `operator`
-and return *pending_approval* for medium/high-risk actions rather than executing;
-an `admin` completes them via the `approve_action` tool. Everything is audited.
+A standard Model Context Protocol server where every tool call is mediated by the
+same controls the in-process agent uses. Read tools require a `viewer`; guarded
+actions require an `operator` and return *pending_approval* for medium/high-risk
+actions rather than executing; an `admin` completes them via the `approve_action`
+tool. Everything is audited.
 
 The protocol-facing async handlers are thin wrappers over the sync, fully
 unit-testable `MCPCore` below.

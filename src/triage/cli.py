@@ -77,8 +77,9 @@ def cmd_demo(_args) -> int:
     _ensure_ready()
     db = TicketDB(get_settings().db_path)
     runner = TriageRunner(db=db)
-    # One of each interesting shape: lockout (needs approval), outage (auto-escalate).
-    for tid in ("TCK-1001", "TCK-1004", "TCK-1002"):
+    # One of each interesting shape: lockout (needs approval), outage
+    # (auto-escalate), access request (approval), and an injection attempt (gated).
+    for tid in ("TCK-1001", "TCK-1004", "TCK-1002", "TCK-1009"):
         ticket = db.get_ticket(tid)
         if ticket:
             _print_run(runner.run(ticket, _operator()))

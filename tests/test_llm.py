@@ -1,25 +1,36 @@
-from triage.agent.prompts import plan_messages, respond_messages
+from triage.agent.prompts import agent_messages, observation_message
+from triage.data.db import Ticket
 from triage.llm.base import Message, Usage, estimate_cost
 from triage.llm.mock import MockProvider
 
 
-def test_mock_plan_is_deterministic_and_classifies():
+def _ticket(subject: str, body: str, requester: str = "dana@acme.com") -> Ticket:
+    return Ticket("TCK-X", subject, body, requester)
+
+
+def test_mock_first_turn_requests_tools_and_classifies():
     p = MockProvider()
-    msgs = plan_messages("Locked out of my account\nI'm locked out and can't log in. ASAP.", "")
+    msgs = agent_messages(_ticket("Locked out of my account", "I'm locked out and can't log in. ASAP."))
     r1 = p.complete(msgs, json_schema={"type": "object"})
     r2 = p.complete(msgs, json_schema={"type": "object"})
     assert r1.text == r2.text  # deterministic
-    assert r1.raw["category"] == "access_password"
-    assert r1.raw["severity"] == "high"
-    assert r1.raw["recommended_action"] == "reset_password"
+    calls = {c["name"] for c in r1.raw["tool_calls"]}
+    # A password lockout should pull runbooks, history, and the directory record.
+    assert {"search_runbooks", "lookup_ticket_history", "lookup_user"} <= calls
 
 
-def test_mock_respond_cites_context():
+def test_mock_final_turn_cites_only_observed_runbooks():
     p = MockProvider()
-    ctx = "[kb-password-reset] Password reset\nDo the thing."
-    r = p.complete(respond_messages("locked out", ctx), json_schema={"type": "object"})
-    assert "kb-password-reset" in r.raw["citations"]
-    assert r.raw["draft_reply"]
+    msgs = agent_messages(_ticket("Locked out", "I'm locked out and can't log in."))
+    msgs.append(Message("assistant", '{"tool_calls": []}'))
+    msgs.append(observation_message([
+        {"tool": "search_runbooks", "result": "[kb-password-reset] Password reset\nDo the thing."}
+    ]))
+    r = p.complete(msgs, json_schema={"type": "object"})
+    final = r.raw["final"]
+    assert final["citations"] == ["kb-password-reset"]
+    assert final["draft_reply"]
+    assert final["recommended_action"] == "reset_password"
 
 
 def test_mock_usage_tracked_but_free():
@@ -31,9 +42,15 @@ def test_mock_usage_tracked_but_free():
 
 def test_negated_urgency_not_high():
     p = MockProvider()
-    r = p.complete(plan_messages("Laptop screen flickering\nNot urgent, no rush.", ""),
+    r = p.complete(agent_messages(_ticket("Laptop screen flickering", "Not urgent, no rush.")),
                    json_schema={"type": "object"})
-    assert r.raw["severity"] == "low"
+    # severity is decided at finalize time; re-run the classifier via a second turn
+    msgs = agent_messages(_ticket("Laptop screen flickering", "Not urgent, no rush."))
+    msgs.append(Message("assistant", "{}"))
+    msgs.append(observation_message([{"tool": "search_runbooks", "result": "[kb-hardware-support] x"}]))
+    final = p.complete(msgs, json_schema={"type": "object"}).raw["final"]
+    assert final["severity"] == "low"
+    assert r.raw["tool_calls"]  # first turn still asked for tools
 
 
 def test_pricing_estimate():

@@ -57,6 +57,25 @@ runbook ids it used. A grounding check rejects any citation that is not in the
 retrieved set, and the eval harness enforces a corpus-wide `grounding_rate` gate.
 This ties every generated answer back to governed source documents.
 
+## Untrusted input handling (prompt injection)
+
+Ticket text is written by end users, so it is treated as untrusted data, not as
+instructions. Two controls apply:
+
+- The agent's system prompt tells it to triage the ticket's contents and to
+  ignore any text that tries to change its rules, grant access, approve actions,
+  or reveal system context.
+- Before the loop runs, `src/triage/enterprise/guardrails.py` scans the ticket
+  for known injection patterns (instruction overrides, approval-bypass phrasing,
+  system-prompt probes, forced-execution). A hit does not stop triage, but it
+  forces every action from that run through human approval — even a normally
+  auto-executed low-risk action — and flags the run in the UI and audit trail.
+
+This is defence in depth, not a claim of perfect detection: the approval gates
+remain the primary safety boundary. The eval harness carries injection scenarios
+and gates on `injection_defense == 1.0` (a flagged ticket never auto-executes an
+action).
+
 ## What production would add
 
 - Real PII handling: field-level encryption, retention policies, DSAR support.

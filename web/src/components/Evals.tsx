@@ -110,6 +110,13 @@ export function Evals({ role }: { role: Role }) {
             value={pct(m.approval_safety)}
             good={m.approval_safety >= 1}
           />
+          {typeof m.injection_defense === "number" && (
+            <MetricCard
+              label="Injection defense"
+              value={pct(m.injection_defense)}
+              good={m.injection_defense >= 1}
+            />
+          )}
           <MetricCard
             label="Pass rate"
             value={pct(m.pass_rate)}
