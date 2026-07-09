@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "./api";
+import { DEMO, api } from "./api";
 import type { Health, Role } from "./types";
 import { Approvals } from "./components/Approvals";
 import { Audit } from "./components/Audit";
@@ -105,6 +105,19 @@ export default function App() {
 
   return (
     <div className="app">
+      {DEMO && (
+        <div className="demo-banner" role="note">
+          <strong>Demo mode</strong> — running against an in-browser mock (fixtures
+          from the real backend), so this is fully clickable with no server. Source:{" "}
+          <a
+            href="https://github.com/kornsour/ops-triage-agent"
+            target="_blank"
+            rel="noreferrer"
+          >
+            github.com/kornsour/ops-triage-agent
+          </a>
+        </div>
+      )}
       <header className="topbar">
         <div className="brand">
           <div className="brand-mark" aria-hidden="true">

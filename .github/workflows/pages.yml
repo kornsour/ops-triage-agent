@@ -1,0 +1,49 @@
+name: Deploy demo to GitHub Pages
+
+# Builds the operator console in demo mode (VITE_DEMO=1 → in-browser mock, no
+# backend) and publishes it to GitHub Pages. The fixtures it serves are committed
+# at web/src/demo/fixtures.json (regenerate with web/scripts/gen_fixtures.py).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "web/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; don't cancel an in-progress run.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Build demo bundle
+        working-directory: web
+        run: |
+          npm install
+          npm run build:demo
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

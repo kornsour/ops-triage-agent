@@ -3,9 +3,14 @@ name = "ops-triage-agent"
 version = "0.1.0"
 description = "Agentic IT/Ops support-triage system: a tool-calling agent, an MCP server with enterprise controls, RAG, prompt-injection handling, and an eval-gated release pipeline."
 readme = "README.md"
+# Developed, tested, and documented on Python 3.14; 3.11 is the supported floor.
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "Andrew Kaiserauer" }]
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.14",
+]
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",

@@ -866,3 +866,16 @@ code.mono {
   border-radius: 4px;
   padding: 1px 5px;
 }
+
+/* Demo-mode banner (static GitHub Pages build only) */
+.demo-banner {
+  background: var(--slate-bg, #f1f5f9);
+  border-bottom: 1px solid var(--border, #e2e8f0);
+  color: var(--muted, #475569);
+  font-size: 13px;
+  padding: 8px 20px;
+  text-align: center;
+}
+.demo-banner strong { color: var(--text, #0f172a); }
+.demo-banner a { color: var(--accent, #4f46e5); text-decoration: none; }
+.demo-banner a:hover { text-decoration: underline; }

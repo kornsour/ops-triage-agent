@@ -1,3 +1,5 @@
+import { ApiError } from "./apiError";
+import { mockApi } from "./demo/mockApi";
 import type {
   AuditEntry,
   AuditVerify,
@@ -12,6 +14,8 @@ import type {
   TriageResult,
 } from "./types";
 
+export { ApiError };
+
 const BASE = "/api";
 
 export const ROLE_KEYS: Record<Role, string> = {
@@ -19,23 +23,6 @@ export const ROLE_KEYS: Record<Role, string> = {
   operator: "demo-operator-key",
   admin: "demo-admin-key",
 };
-
-/** Raised when the backend returns a non-2xx response. */
-export class ApiError extends Error {
-  readonly status: number;
-  readonly role: Role;
-  constructor(status: number, message: string, role: Role) {
-    super(message);
-    this.name = "ApiError";
-    this.status = status;
-    this.role = role;
-  }
-
-  /** True for auth/permission failures (used to show a friendly RBAC note). */
-  get isForbidden(): boolean {
-    return this.status === 401 || this.status === 403;
-  }
-}
 
 interface RequestOptions {
   method?: "GET" | "POST";
@@ -84,7 +71,7 @@ async function request<T>(
   return (await res.json()) as T;
 }
 
-export const api = {
+const realApi = {
   health: (role: Role) =>
     request<Health>("/health", role, { auth: false }),
   tools: (role: Role) => request<Tool[]>("/tools", role, { auth: false }),
@@ -119,3 +106,11 @@ export const api = {
 
   evalsLatest: (role: Role) => request<EvalReport>("/evals/latest", role),
 };
+
+/**
+ * In a normal build the app talks to the FastAPI backend at `/api`. The static
+ * GitHub Pages demo is built with VITE_DEMO=1, which swaps in an in-browser mock
+ * backed by fixtures — so the console is fully clickable with no server.
+ */
+export const DEMO = import.meta.env.VITE_DEMO === "1";
+export const api = (DEMO ? mockApi : realApi) as typeof realApi;
