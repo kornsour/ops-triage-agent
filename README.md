@@ -135,6 +135,10 @@ full design, [`docs/architecture-decision-record.md`](docs/architecture-decision
 for the key decisions and trade-offs, and
 [`docs/solution-brief.md`](docs/solution-brief.md) for a one-page framing.
 
+[`docs/archive/`](docs/archive/) holds superseded documentation and historical
+records only — it does not reflect the current state of the project and should
+not be used to inform new work.
+
 ## Enterprise controls
 
 Every side-effect passes through a single guarded-action executor that enforces:
