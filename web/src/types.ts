@@ -34,6 +34,7 @@ export interface Ticket {
 
 export type TriageStatus =
   | "completed"
+  | "ungrounded"
   | "needs_approval"
   | "denied"
   | "auth_error"

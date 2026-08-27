@@ -57,6 +57,12 @@ runbook ids it used. A grounding check rejects any citation that is not in the
 retrieved set, and the eval harness enforces a corpus-wide `grounding_rate` gate.
 This ties every generated answer back to governed source documents.
 
+If rejecting citations leaves none, the run is marked `status: "ungrounded"`
+rather than shipping the draft on trust. A recommended `post_reply` action is
+suppressed outright in that case — it never reaches the `ActionExecutor` — since
+`post_reply` is otherwise low-risk and auto-approved and would post the
+unverified draft straight to the requester.
+
 ## Untrusted input handling (prompt injection)
 
 Ticket text is written by end users, so it is treated as untrusted data, not as

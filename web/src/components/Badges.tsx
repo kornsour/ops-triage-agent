@@ -25,9 +25,11 @@ const STATUS_CLASS: Record<string, string> = {
   needs_approval: "status-warn",
   pending: "status-warn",
   pending_approval: "status-warn",
+  suppressed: "status-warn",
   denied: "status-bad",
   auth_error: "status-bad",
   budget_exceeded: "status-bad",
+  ungrounded: "status-bad",
 };
 
 export function StatusBadge({ status }: { status: string }) {

@@ -52,11 +52,14 @@ deployed inside their environment.
    back, and repeats up to a step budget. The final answer carries the
    classification, a reply grounded *only* in retrieved runbooks with citations,
    and at most one recommended guarded action. A grounding check rejects any
-   citation not in the set the tools actually returned.
+   citation not in the set the tools actually returned; if that leaves no valid
+   citation, the run's `status` is `ungrounded`.
 4. **Act.** Any recommended guarded action is routed through the
    `ActionExecutor`: auth → rate limit → idempotency → approval policy → retry →
    audit. Low-risk actions auto-execute; medium/high-risk actions — and any action
-   from a run flagged for injection — return `pending_approval`.
+   from a run flagged for injection — return `pending_approval`. The exception is
+   `post_reply` on an `ungrounded` run: it is suppressed before it ever reaches
+   the executor, so a fabricated draft is never posted to the requester.
 5. **Approve (separate request).** An admin approves via the UI/MCP; the executor
    runs the effect once (idempotent) and writes the execution to the audit chain.
 6. **Observe.** Latency per step, token usage, and USD cost are recorded on the
