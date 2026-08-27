@@ -44,7 +44,7 @@ class TraceStep:
 class TriageResult:
     run_id: str
     ticket_id: str
-    status: str  # completed | needs_approval | auth_error | budget_exceeded
+    status: str  # completed | needs_approval | denied | auth_error | budget_exceeded
     category: str
     severity: str
     summary: str
@@ -201,6 +201,8 @@ class TriageRunner:
                     action.update(res)
                     if res["status"] == "pending_approval":
                         status = "needs_approval"
+                    elif res["status"] == "denied":
+                        status = "denied"
                 except AuthError as exc:
                     action.update({"status": "blocked", "reason": str(exc)})
                     status = "auth_error"

@@ -51,6 +51,7 @@ function ResultView({ result, role }: { result: TriageResult; role: Role }) {
   const { action, metrics } = result;
   const awaitingApproval =
     action.status === "pending_approval" || result.status === "needs_approval";
+  const wasDenied = action.status === "denied" || result.status === "denied";
 
   return (
     <div className="run-detail">
@@ -114,6 +115,23 @@ function ResultView({ result, role }: { result: TriageResult; role: Role }) {
           that is gated behind a human approval. Switch to the{" "}
           <strong>admin</strong> role and visit <strong>Approvals</strong> to
           decide.
+          {action.approval_id && (
+            <>
+              {" "}
+              Approval ID: <span className="mono">{action.approval_id}</span>
+            </>
+          )}
+        </div>
+      )}
+
+      {wasDenied && (
+        <div className="callout callout-bad" role="status">
+          <strong>Action denied.</strong> An admin already denied this exact{" "}
+          {action.name ? <span className="mono">{action.name}</span> : "action"}{" "}
+          request{action.reason ? <> — {action.reason}</> : "."} Approval
+          decisions are final for a given action and its arguments, so
+          re-running triage on this ticket will keep reporting the same
+          denial. Handle this ticket manually, or take a different action.
           {action.approval_id && (
             <>
               {" "}
