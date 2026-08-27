@@ -13,6 +13,35 @@ def _ticket(db, tid):
     return db.get_ticket(tid)
 
 
+class _FabricatorProvider:
+    """Stub LLMProvider that finalizes on the first turn with a citation that
+    was never retrieved. The real mock provider derives citations by regexing
+    the observation text it was actually handed, so it structurally cannot
+    fabricate one (see triage/llm/mock.py) — this stub exists to exercise the
+    runner's grounding check independent of any provider's honesty."""
+
+    model = "stub-fabricator"
+
+    def __init__(self, recommended_action: str | None = None) -> None:
+        self.recommended_action = recommended_action
+
+    def complete(self, messages, *, temperature=0.0, max_tokens=1024, json_schema=None):
+        payload = {
+            "final": {
+                "category": "access_password",
+                "severity": "medium",
+                "summary": "stub run with a fabricated citation",
+                "draft_reply": "Here is how to reset your password.",
+                "citations": ["kb-does-not-exist"],
+                "confidence": 0.9,
+                "recommended_action": self.recommended_action,
+            }
+        }
+        text = json.dumps(payload)
+        usage = Usage(input_tokens=1, output_tokens=1)
+        return LLMResponse(text=text, usage=usage, model=self.model, raw=payload)
+
+
 class _NeverFinalizingProvider:
     """A stub provider that always asks for another tool call and never
     emits `final` — the ordinary failure mode of a real model that never
@@ -80,6 +109,28 @@ def test_injection_attempt_is_flagged_and_gated(runner, operator, settings):
     assert result.action["name"] == "escalate"
     assert result.action["status"] == "pending_approval"
     assert result.status == "needs_approval"
+
+
+def test_fabricated_citation_is_dropped_and_run_is_ungrounded(seeded, operator):
+    from triage.agent.runner import TriageRunner
+
+    fab_runner = TriageRunner(provider=_FabricatorProvider())
+    result = fab_runner.run(_ticket(fab_runner.db, "TCK-1001"), operator)
+    assert result.grounded is False
+    assert result.citations == []  # the fabricated id was dropped, not surfaced
+    assert result.status == "ungrounded"
+
+
+def test_ungrounded_post_reply_is_suppressed_not_executed(seeded, operator):
+    from triage.agent.runner import TriageRunner
+
+    fab_runner = TriageRunner(provider=_FabricatorProvider(recommended_action="post_reply"))
+    result = fab_runner.run(_ticket(fab_runner.db, "TCK-1001"), operator)
+    assert result.status == "ungrounded"
+    assert result.action["name"] == "post_reply"
+    assert result.action["status"] == "suppressed"
+    # Never reached the executor: no approval was created for it.
+    assert "approval_id" not in result.action
 
 
 def test_step_budget_exceeded_when_model_never_finalizes(seeded, operator):

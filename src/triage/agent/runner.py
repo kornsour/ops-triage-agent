@@ -5,6 +5,9 @@ the runner executes them and feeds the observations back, and the loop repeats
 until the model returns a final answer (or the step budget is hit). Any
 recommended guarded action is then routed through the enterprise-controls
 executor. Untrusted-content detection forces every action through human approval.
+A grounding check drops any citation the tools never actually returned; if that
+leaves no valid citation, the run is marked `ungrounded` and a recommended
+`post_reply` is suppressed rather than reaching the executor.
 """
 
 from __future__ import annotations
@@ -44,7 +47,8 @@ class TraceStep:
 class TriageResult:
     run_id: str
     ticket_id: str
-    # completed | needs_approval | denied | auth_error | budget_exceeded | step_budget_exceeded
+    # completed | ungrounded | needs_approval | denied | auth_error | budget_exceeded
+    # | step_budget_exceeded
     status: str
     category: str
     severity: str
@@ -183,18 +187,33 @@ class TriageRunner:
         category = final.get("category", "general")
         severity = final.get("severity", "low")
         draft_reply = final.get("draft_reply", "")
-        citations = final.get("citations", [])
+        # Drop any citation the tools never actually returned — the responder
+        # gets no credit for citing a runbook id it fabricated or hallucinated.
+        citations = [c for c in final.get("citations", []) if c in retrieved_ids]
         confidence = float(final.get("confidence", 0.0))
         recommended_action = final.get("recommended_action")
-        grounded = bool(citations) and set(citations).issubset(set(retrieved_ids))
+        grounded = bool(citations)
 
         # 2) Act — route any guarded action through the enterprise-controls executor.
         # An agent that exhausted its step budget without emitting `final` never
         # answered, so it gets its own status and never reaches the act phase —
         # it has no vetted recommendation to act on.
         action: dict[str, Any] = {"name": recommended_action, "status": "none"}
-        status = "completed" if finalized else "step_budget_exceeded"
-        if finalized and recommended_action in ACTION_EFFECTS:
+        if not finalized:
+            status = "step_budget_exceeded"
+        elif not grounded:
+            status = "ungrounded"
+        else:
+            status = "completed"
+        if recommended_action == "post_reply" and not grounded:
+            # post_reply is normally low-risk/auto-approved (see
+            # ACTION_POLICY), which would otherwise let a fabricated draft
+            # reach the requester untouched. Never route it to the executor.
+            action["status"] = "suppressed"
+            action["reason"] = "ungrounded: draft cites no runbook the tools retrieved"
+            trace.append(TraceStep("act", 0.0,
+                                   {"action": recommended_action, "status": action["status"]}))
+        elif finalized and recommended_action in ACTION_EFFECTS:
             args = _action_args(recommended_action, ticket, category, draft_reply)
             action["args"] = args
             with timer.step("act"):
