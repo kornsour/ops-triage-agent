@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 
 from triage.enterprise.audit import AuditLog
@@ -37,6 +39,38 @@ def test_audit_chain_verifies_and_detects_tampering(tmp_path):
     ok, msg = log.verify()
     assert not ok
     assert "tampered" in msg or "chain" in msg
+
+
+def test_audit_concurrent_writers_keep_chain_intact(tmp_path):
+    # Simulates two separate processes on the same audit path (e.g. the API
+    # server and an MCP server, per docs/reference-architecture.md) by using
+    # two independent AuditLog instances — each with its own in-memory tail
+    # cache — writing from separate threads at the same time.
+    path = tmp_path / "concurrent.jsonl"
+    log_a = AuditLog(path)
+    log_b = AuditLog(path)
+    n = 40
+    errors: list[Exception] = []
+
+    def write_many(log: AuditLog, actor: str) -> None:
+        try:
+            for i in range(n):
+                log.record(actor=actor, action="probe", target=str(i), outcome="executed")
+        except Exception as exc:  # pragma: no cover - surfaced via errors list
+            errors.append(exc)
+
+    t1 = threading.Thread(target=write_many, args=(log_a, "writer-a"))
+    t2 = threading.Thread(target=write_many, args=(log_b, "writer-b"))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert not errors
+    entries = log_a.entries()
+    assert len(entries) == 2 * n
+    ok, msg = log_a.verify()
+    assert ok, msg
 
 
 def test_idempotency_runs_once():
