@@ -42,7 +42,10 @@ class ActionExecutor:
         self.db = db
         self.audit = audit
         self.approvals = approvals
-        self.idempotency = idempotency or IdempotencyStore()
+        # Shares `db`'s SQLite file, so every `ActionExecutor` built against
+        # the same db_path — a fresh process after a restart, or a sibling
+        # replica behind a load balancer — replays the same results.
+        self.idempotency = idempotency or IdempotencyStore(db.db_path)
         self._rate_limit_per_min = s.rate_limit_per_min
         # One TokenBucket per principal, keyed on api_key, so one caller's
         # traffic can't exhaust another's allowance. Pre-seeded from the
@@ -102,8 +105,7 @@ class ActionExecutor:
         # decided. `approval_id` is derived from `key`, so an identical
         # re-request would otherwise silently no-op the INSERT below and get
         # told "pending" again — even though it was denied, or already
-        # executed on a since-restarted process (idempotency is in-memory,
-        # approvals are persisted). Surface the real outcome instead.
+        # executed. Surface the real outcome instead.
         existing = self.approvals.get(key)
         if existing is not None and existing.status == "denied":
             self.audit.record(actor=principal.name, action=action, target=str(args),

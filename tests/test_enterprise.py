@@ -2,7 +2,11 @@ import pytest
 
 from triage.enterprise.audit import AuditLog
 from triage.enterprise.auth import AuthError, authenticate, require_role
-from triage.enterprise.idempotency import IdempotencyStore, make_key
+from triage.enterprise.idempotency import (
+    IdempotencyStore,
+    InMemoryIdempotencyStore,
+    make_key,
+)
 from triage.enterprise.ratelimit import RateLimitExceeded, TokenBucket
 from triage.enterprise.retry import retry
 
@@ -68,7 +72,7 @@ def test_audit_chain_normal_append_still_verifies(tmp_path):
 
 
 def test_idempotency_runs_once():
-    store = IdempotencyStore()
+    store = InMemoryIdempotencyStore()
     calls = []
 
     def fn():
@@ -80,6 +84,33 @@ def test_idempotency_runs_once():
     r2, replayed2 = store.run_once(key, fn)
     assert r1 == r2 == "result"
     assert replayed1 is False and replayed2 is True
+    assert len(calls) == 1
+
+
+def test_idempotency_store_persists_across_instances(tmp_path):
+    # A fresh `IdempotencyStore` built against the same db_path — modeling a
+    # process restart, or a second replica behind a load balancer — must see
+    # results a prior instance already stored, not re-run the effect.
+    db_path = tmp_path / "triage.db"
+    key = make_key("close_ticket", {"ticket_id": "TCK-1"})
+
+    store_a = IdempotencyStore(db_path)
+    calls = []
+
+    def fn():
+        calls.append(1)
+        return {"ok": True}
+
+    result_a, replayed_a = store_a.run_once(key, fn)
+    assert result_a == {"ok": True}
+    assert replayed_a is False
+
+    store_b = IdempotencyStore(db_path)
+    assert store_b.seen(key)
+    assert store_b.get(key) == {"ok": True}
+    result_b, replayed_b = store_b.run_once(key, fn)
+    assert result_b == {"ok": True}
+    assert replayed_b is True
     assert len(calls) == 1
 
 

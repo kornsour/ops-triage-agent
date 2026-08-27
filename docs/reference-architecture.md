@@ -74,6 +74,7 @@ deployed inside their environment.
 | Vector store | numpy cosine + on-disk | pgvector / FAISS / managed vector DB |
 | Ticket DB | SQLite | Postgres |
 | Approvals store | SQLite | Postgres + workflow engine / queue |
+| Idempotency store | SQLite | Postgres (same instance as the ticket DB) / Redis with a durable backstop |
 | AuthN/Z | API-key → role | OIDC / SSO + fine-grained RBAC |
 | Audit | hash-chained JSONL | append-only store / WORM bucket, periodic anchoring |
 | Transport | FastAPI + MCP stdio | same + MCP over HTTP, gateway, mTLS |
