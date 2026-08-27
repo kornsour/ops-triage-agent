@@ -67,12 +67,22 @@ it is not. The policy table is the security-review surface and is small by desig
 **Context.** An audit log that can be edited after the fact is not evidence.
 
 **Decision.** Each audit entry includes the hash of the previous entry; `verify()`
-recomputes the chain and detects any edit, reorder, or deletion.
+recomputes the chain and detects any edit, reorder, or deletion. The chain alone
+only anchors entries to each other, not to an expected length, so a chain
+truncated from the tail (the most likely attack: "remove the record of the
+last thing I did") stays internally consistent and re-verifies as intact.
+`record()` closes that gap by also persisting a small sidecar head file
+(`{expected_length, last_hash}`, updated inside the same lock as the append)
+that `verify()` compares the log against, so truncation from either end — not
+just the middle — is detected.
 
 **Consequences.** Tamper-evidence with no external dependency. It is not
-tamper-*proof* (an attacker who can rewrite the whole file can recompute hashes);
-production would anchor periodically to an append-only store / WORM bucket. The
-chain makes silent single-record edits detectable, which is the common case.
+tamper-*proof* (an attacker who can rewrite the whole file — and its sidecar
+head — can recompute hashes and forge a consistent shorter chain); production
+would anchor periodically to an append-only store / WORM bucket, which is a
+stronger, external version of the same idea. The chain (plus its head anchor)
+makes silent single-record edits and tail-truncation detectable, which are the
+common cases.
 
 ---
 
@@ -90,9 +100,14 @@ includes adversarial cases the offline classifier gets wrong, so accuracy sits
 below 1.0 and the gates have something to catch. Reports are persisted and
 compared run over run for drift.
 
-**Consequences.** Quality regressions block the merge. The golden set must be
-grown and curated over time; that maintenance is the point, and it mirrors the
-deployment→product feedback loop.
+**Consequences.** Quality regressions block the merge. This is enforced, not
+just advisory: a repository ruleset
+([`.github/rulesets/default-branch.json`](../.github/rulesets/default-branch.json))
+requires the `backend (3.11)`, `backend (3.14)`, and `web` checks — which run
+`make eval-gate` — to pass before a pull request can merge into `main`, so a
+red CI run (including a gate breach) cannot be merged past. The golden set must
+be grown and curated over time; that maintenance is the point, and it mirrors
+the deployment→product feedback loop.
 
 ---
 
