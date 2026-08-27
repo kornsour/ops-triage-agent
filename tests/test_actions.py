@@ -56,3 +56,34 @@ def test_rate_limit_is_isolated_per_principal(executor, operator, admin, setting
 
 def test_buckets_are_pre_seeded_from_configured_api_keys(executor, settings):
     assert set(executor.buckets) == set(settings.parsed_api_keys())
+
+
+def _new_executor(settings):
+    # A fresh `ActionExecutor` built from scratch against the same
+    # `settings.db_path` — standing in for a second replica behind a load
+    # balancer, or the same process after a restart.
+    db = TicketDB(settings.db_path)
+    audit = AuditLog(settings.audit_path)
+    approvals = ApprovalStore(settings.db_path)
+    return ActionExecutor(db, audit, approvals)
+
+
+def test_idempotency_replays_across_separately_constructed_executors(operator, settings):
+    executor_a = _new_executor(settings)
+    executor_b = _new_executor(settings)
+
+    result_a = executor_a.request(
+        run_id="run-a", principal=operator, action="close_ticket",
+        args={"ticket_id": "TCK-shared"},
+    )
+    assert result_a["status"] == "executed"
+
+    # Identical (action, args) on an independently constructed executor —
+    # nothing in-process is shared but the SQLite file — must replay the
+    # stored result rather than executing the effect a second time.
+    result_b = executor_b.request(
+        run_id="run-b", principal=operator, action="close_ticket",
+        args={"ticket_id": "TCK-shared"},
+    )
+    assert result_b["status"] == "replayed"
+    assert result_b["result"] == result_a["result"]
