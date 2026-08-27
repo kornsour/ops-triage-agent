@@ -39,6 +39,34 @@ def test_audit_chain_verifies_and_detects_tampering(tmp_path):
     assert "tampered" in msg or "chain" in msg
 
 
+def test_audit_chain_detects_tail_truncation(tmp_path):
+    log = AuditLog(tmp_path / "a.jsonl")
+    log.record(actor="op", action="reset_password", target="x", outcome="executed")
+    log.record(actor="op", action="close_ticket", target="y", outcome="executed")
+    log.record(actor="admin", action="grant_access", target="z", outcome="executed")
+    ok, msg = log.verify()
+    assert ok, msg
+
+    # Drop the last line. The remaining prefix is still internally
+    # consistent (seq 0..1, correct prev_hash/hash chain) — only the head
+    # anchor can tell the log is shorter than it should be.
+    log_file = tmp_path / "a.jsonl"
+    lines = log_file.read_text().splitlines()
+    log_file.write_text("\n".join(lines[:-1]) + "\n")
+
+    ok, msg = log.verify()
+    assert not ok
+    assert "truncated" in msg
+
+
+def test_audit_chain_normal_append_still_verifies(tmp_path):
+    log = AuditLog(tmp_path / "a.jsonl")
+    for i in range(5):
+        log.record(actor="op", action="post_reply", target=f"t{i}", outcome="executed")
+    ok, msg = log.verify()
+    assert ok, msg
+
+
 def test_idempotency_runs_once():
     store = IdempotencyStore()
     calls = []
