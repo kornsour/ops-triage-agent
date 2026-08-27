@@ -70,8 +70,12 @@ budget. The loop is identical across the mock, OpenAI, and Anthropic providers.
 
 ## The evaluation harness
 
-Releases are gated on a golden dataset. `make eval-gate` runs the agent across
-the set and fails CI if a metric regresses:
+Releases are gated on benchmarks registered under `evals/benchmarks/*/` — a
+directory + a `benchmark.toml` declaring the dataset, scorers, and gates, no
+harness code to touch. `make eval-gate` runs every registered benchmark and
+fails CI if any metric regresses. The golden set below is the one shipped
+today; see [`docs/evals.md`](docs/evals.md) for the config format and how to
+add another:
 
 | Metric | What it measures | Gate |
 | --- | --- | --- |
@@ -131,9 +135,9 @@ src/triage/
 ├── observability/  structured logging · latency/cost/token metrics
 └── api/            FastAPI backend
 mcp_server/         MCP server exposing the enterprise tools with controls
-evals/              golden set · scoring · regression gates · drift detection
+evals/              benchmark registry · pluggable scorers · config-driven gates · drift detection
 web/                React + TypeScript dashboard
-docs/               architecture decision record · reference architecture · solution brief · data governance
+docs/               architecture decision record · reference architecture · solution brief · data governance · eval harness
 knowledge_base/     runbooks (the RAG corpus)
 ```
 
