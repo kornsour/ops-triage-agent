@@ -34,7 +34,7 @@ class ActionExecutor:
         approvals: ApprovalStore,
         *,
         idempotency: IdempotencyStore | None = None,
-        bucket: TokenBucket | None = None,
+        buckets: dict[str, TokenBucket] | None = None,
         now_fn: Callable[[], float] = time.time,
         sleep_fn: Callable[[float], None] = lambda _s: None,
     ) -> None:
@@ -43,11 +43,34 @@ class ActionExecutor:
         self.audit = audit
         self.approvals = approvals
         self.idempotency = idempotency or IdempotencyStore()
-        self.bucket = bucket or TokenBucket(
-            capacity=s.rate_limit_per_min, refill_per_sec=s.rate_limit_per_min / 60.0
+        self._rate_limit_per_min = s.rate_limit_per_min
+        # One TokenBucket per principal, keyed on api_key, so one caller's
+        # traffic can't exhaust another's allowance. Pre-seeded from the
+        # configured API keys — that both gives every known principal its own
+        # bucket up front and bounds the dict's size, since `authenticate()`
+        # never hands back a `Principal` whose key isn't in that same set.
+        self.buckets: dict[str, TokenBucket] = (
+            buckets if buckets is not None
+            else {api_key: self._new_bucket() for api_key in s.parsed_api_keys()}
         )
         self.now_fn = now_fn
         self.sleep_fn = sleep_fn
+
+    def _new_bucket(self) -> TokenBucket:
+        return TokenBucket(
+            capacity=self._rate_limit_per_min,
+            refill_per_sec=self._rate_limit_per_min / 60.0,
+        )
+
+    def _bucket_for(self, principal: Principal) -> TokenBucket:
+        # Defensive fallback only: every `Principal` reaching here came from
+        # `authenticate()`, so its key is already in `self.buckets`. This
+        # avoids a KeyError rather than being a growth path in practice.
+        bucket = self.buckets.get(principal.api_key)
+        if bucket is None:
+            bucket = self._new_bucket()
+            self.buckets[principal.api_key] = bucket
+        return bucket
 
     def _run_effect(self, action: str, args: dict[str, Any]) -> dict[str, Any]:
         effect = ACTION_EFFECTS[action]
@@ -66,7 +89,7 @@ class ActionExecutor:
         if action not in ACTION_EFFECTS:
             raise ValueError(f"unknown action {action!r}")
         require_role(principal, "operator")
-        self.bucket.acquire(self.now_fn())
+        self._bucket_for(principal).acquire(self.now_fn())
 
         risk, auto_approve, _approver = policy_for(action)
         key = make_key(action, args)
