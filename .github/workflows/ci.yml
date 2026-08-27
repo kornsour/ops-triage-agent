@@ -42,11 +42,35 @@ jobs:
       - name: Eval gate (fails on quality/safety regression)
         run: python evals/run_evals.py --gate
 
+      - name: Restore previous eval report
+        id: prev_report
+        continue-on-error: true  # supplementary signal; never block the merge on infra hiccups
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/prev-eval-report
+          RUN_ID=$(gh run list --repo "${{ github.repository }}" --workflow=ci.yml \
+            --branch=main --status=success --limit 1 --json databaseId --jq '.[0].databaseId' || true)
+          if [ -z "$RUN_ID" ]; then
+            echo "No prior successful CI run on main; nothing to compare against yet."
+            exit 0
+          fi
+          if gh run download "$RUN_ID" --repo "${{ github.repository }}" \
+              --name "eval-report-${{ matrix.python-version }}" --dir /tmp/prev-eval-report; then
+            echo "restored=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Run $RUN_ID has no eval-report-${{ matrix.python-version }} artifact; skipping."
+          fi
+
+      - name: Drift check against previous main report
+        if: steps.prev_report.outputs.restored == 'true'
+        run: python evals/drift.py /tmp/prev-eval-report/*.json evals/reports/*.json
+
       - name: Upload eval report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: eval-report
+          name: eval-report-${{ matrix.python-version }}
           path: evals/reports/*.json
           if-no-files-found: ignore
 

@@ -42,6 +42,21 @@ class _FabricatorProvider:
         return LLMResponse(text=text, usage=usage, model=self.model, raw=payload)
 
 
+class _NeverFinalizingProvider:
+    """A stub provider that always asks for another tool call and never
+    emits `final` — the ordinary failure mode of a real model that never
+    converges within the step budget."""
+
+    model = "stub-never-finalizes"
+
+    def complete(self, messages, *, temperature=0.0, max_tokens=1024, json_schema=None):
+        payload = {
+            "reasoning": "still gathering context",
+            "tool_calls": [{"name": "search_runbooks", "args": {"query": "still looking"}}],
+        }
+        return LLMResponse(text=json.dumps(payload), usage=Usage(), model=self.model, raw=payload)
+
+
 def test_lockout_is_classified_and_gated(runner, operator):
     result = runner.run(_ticket(runner.db, "TCK-1001"), operator)
     assert result.category == "access_password"
@@ -116,6 +131,22 @@ def test_ungrounded_post_reply_is_suppressed_not_executed(seeded, operator):
     assert result.action["status"] == "suppressed"
     # Never reached the executor: no approval was created for it.
     assert "approval_id" not in result.action
+
+
+def test_step_budget_exceeded_when_model_never_finalizes(seeded, operator):
+    from triage.agent.runner import TriageRunner
+
+    runner = TriageRunner(settings=seeded, provider=_NeverFinalizingProvider())
+    result = runner.run(_ticket(runner.db, "TCK-1002"), operator)
+
+    assert result.status == "step_budget_exceeded"
+    # An agent that never answered has nothing vetted to act on.
+    assert result.action["name"] is None
+    assert result.action["status"] == "none"
+    assert all(step.step != "act" for step in result.trace)
+    # Every step-budget turn reasoned about a tool call; none reached "respond".
+    assert [s.step for s in result.trace].count("reason") == seeded.max_agent_steps
+    assert result.metrics["llm_calls"] == seeded.max_agent_steps
 
 
 def test_viewer_cannot_request_action(runner, viewer):

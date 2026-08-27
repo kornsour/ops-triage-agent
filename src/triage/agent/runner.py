@@ -47,7 +47,9 @@ class TraceStep:
 class TriageResult:
     run_id: str
     ticket_id: str
-    status: str  # completed | ungrounded | needs_approval | denied | auth_error | budget_exceeded
+    # completed | ungrounded | needs_approval | denied | auth_error | budget_exceeded
+    # | step_budget_exceeded
+    status: str
     category: str
     severity: str
     summary: str
@@ -150,6 +152,7 @@ class TriageRunner:
         retrieved_ids: list[str] = []
         plan: list[str] = []
         final: dict[str, Any] = {}
+        finalized = False
         for i in range(self.settings.max_agent_steps):
             key = f"llm_{i}"
             with timer.step(key):
@@ -178,6 +181,7 @@ class TriageRunner:
             trace.append(TraceStep("respond", metrics.steps[key],
                                    {"citations": final.get("citations", []),
                                     "confidence": final.get("confidence", 0.0)}))
+            finalized = True
             break
 
         category = final.get("category", "general")
@@ -191,8 +195,16 @@ class TriageRunner:
         grounded = bool(citations)
 
         # 2) Act — route any guarded action through the enterprise-controls executor.
+        # An agent that exhausted its step budget without emitting `final` never
+        # answered, so it gets its own status and never reaches the act phase —
+        # it has no vetted recommendation to act on.
         action: dict[str, Any] = {"name": recommended_action, "status": "none"}
-        status = "completed" if grounded else "ungrounded"
+        if not finalized:
+            status = "step_budget_exceeded"
+        elif not grounded:
+            status = "ungrounded"
+        else:
+            status = "completed"
         if recommended_action == "post_reply" and not grounded:
             # post_reply is normally low-risk/auto-approved (see
             # ACTION_POLICY), which would otherwise let a fabricated draft
@@ -201,7 +213,7 @@ class TriageRunner:
             action["reason"] = "ungrounded: draft cites no runbook the tools retrieved"
             trace.append(TraceStep("act", 0.0,
                                    {"action": recommended_action, "status": action["status"]}))
-        elif recommended_action in ACTION_EFFECTS:
+        elif finalized and recommended_action in ACTION_EFFECTS:
             args = _action_args(recommended_action, ticket, category, draft_reply)
             action["args"] = args
             with timer.step("act"):

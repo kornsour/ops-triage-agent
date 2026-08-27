@@ -38,7 +38,8 @@ export type TriageStatus =
   | "needs_approval"
   | "denied"
   | "auth_error"
-  | "budget_exceeded";
+  | "budget_exceeded"
+  | "step_budget_exceeded";
 
 export type ActionStatus = string;
 
