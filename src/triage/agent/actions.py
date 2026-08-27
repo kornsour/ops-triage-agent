@@ -5,8 +5,11 @@ Wires together the enterprise controls so that *no* action can execute without:
     rate limit    per-principal token bucket
     idempotency   identical (action, args) executes once, then replays
     approval      medium/high-risk actions need an admin decision first
+    sandbox       the effect itself runs inside an execution boundary, not
+                  bare in this process — see triage.sandbox and docs/sandbox.md
     retry         bounded backoff around the (flaky) downstream effect
-    audit         every request / decision / execution is hash-chained
+    audit         every request / decision / execution — and every sandbox
+                  containment failure — is hash-chained
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from triage.enterprise.auth import Principal, require_role
 from triage.enterprise.idempotency import IdempotencyStore, make_key
 from triage.enterprise.ratelimit import TokenBucket
 from triage.enterprise.retry import retry
+from triage.sandbox import Sandbox, SandboxContainmentError, SandboxEffectError, build_sandbox
 
 
 class ActionExecutor:
@@ -37,11 +41,18 @@ class ActionExecutor:
         buckets: dict[str, TokenBucket] | None = None,
         now_fn: Callable[[], float] = time.time,
         sleep_fn: Callable[[float], None] = lambda _s: None,
+        sandbox: Sandbox | None = None,
     ) -> None:
         s = get_settings()
         self.db = db
         self.audit = audit
         self.approvals = approvals
+        # Every effect runs through this boundary rather than being called
+        # bare — same-process by default (`InProcessSandbox`, wired via
+        # `build_sandbox`), a locked-down container when configured. See
+        # triage.sandbox and docs/sandbox.md.
+        self.sandbox = sandbox if sandbox is not None else build_sandbox(s)
+        self._sandbox_timeout_s = s.sandbox_timeout_s
         # Shares `db`'s SQLite file, so every `ActionExecutor` built against
         # the same db_path — a fresh process after a restart, or a sibling
         # replica behind a load balancer — replays the same results.
@@ -76,8 +87,67 @@ class ActionExecutor:
         return bucket
 
     def _run_effect(self, action: str, args: dict[str, Any]) -> dict[str, Any]:
-        effect = ACTION_EFFECTS[action]
-        return retry(lambda: effect(self.db, **args), attempts=3, sleep=self.sleep_fn)
+        """Run the action's effect through `self.sandbox`.
+
+        A business-logic exception from the effect itself
+        (`SandboxEffectError`, and — for parity with an in-process direct
+        call — an unexpected error from the sandbox's own plumbing) is
+        retried like any flaky downstream call always has been here. A
+        containment failure (`SandboxContainmentError`: the boundary timed
+        the action out, killed it, or denied it before it ran) is *not*
+        retried — it is a security-relevant event in its own right, not
+        transient noise, and the caller (`request` / `execute_approved`)
+        turns it into an audited, structured "contained" result rather than
+        an unhandled exception.
+
+        `close_ticket` is the one action with genuine host-side state (it
+        marks the ticket resolved in `self.db`); the sandboxed effect itself
+        only ever sees JSON args, never a database handle (see
+        triage.sandbox.effects), so that write is applied here, by the
+        trusted host, once the sandboxed call has actually completed —
+        never speculatively, and never by the sandboxed code itself.
+        """
+
+        def attempt() -> dict[str, Any]:
+            result = self.sandbox.run(action=action, args=args, timeout_s=self._sandbox_timeout_s)
+            if result.status.value != "completed":
+                raise SandboxContainmentError(action, result)
+            return result.output or {}
+
+        # Only a business-logic exception from the effect itself is retried
+        # (`SandboxEffectError`, matching the old "retry the flaky effect
+        # call" behavior). `SandboxContainmentError` is a different type, so
+        # `retry_on` never catches it — it propagates on the first attempt.
+        output = retry(attempt, attempts=3, sleep=self.sleep_fn, retry_on=(SandboxEffectError,))
+        if action == "close_ticket" and args.get("ticket_id"):
+            self.db.set_status(args["ticket_id"], "resolved")
+        return output
+
+    def _handle_containment_failure(
+        self,
+        *,
+        principal: Principal,
+        action: str,
+        args: dict[str, Any],
+        risk: str,
+        exc: SandboxContainmentError,
+        run_id: str | None = None,
+        approval_id: str | None = None,
+    ) -> dict[str, Any]:
+        result = exc.result
+        metadata: dict[str, Any] = {
+            "risk": risk, "sandbox_status": result.status.value,
+            "reason": result.error, "duration_ms": round(result.duration_ms, 2),
+            **result.detail,
+        }
+        if run_id is not None:
+            metadata["run_id"] = run_id
+        if approval_id is not None:
+            metadata["approval_id"] = approval_id
+        self.audit.record(actor=principal.name, action=action, target=str(args),
+                          outcome=f"sandbox_{result.status.value}", metadata=metadata)
+        return {"status": "contained", "action": action, "risk": risk,
+                "sandbox_status": result.status.value, "reason": result.error}
 
     def request(
         self, *, run_id: str, principal: Principal, action: str, args: dict[str, Any],
@@ -119,7 +189,12 @@ class ActionExecutor:
                     "result": self.idempotency.get(key)}
 
         if auto_approve and not force_approval:
-            result = self._run_effect(action, args)
+            try:
+                result = self._run_effect(action, args)
+            except SandboxContainmentError as exc:
+                return self._handle_containment_failure(
+                    principal=principal, action=action, args=args, risk=risk,
+                    exc=exc, run_id=run_id)
             self.idempotency.remember(key, result)
             self.audit.record(actor=principal.name, action=action, target=str(args),
                               outcome="executed",
@@ -151,7 +226,12 @@ class ActionExecutor:
         if self.idempotency.seen(key):
             return {"status": "replayed", "result": self.idempotency.get(key)}
 
-        result = self._run_effect(decision.action, decision.args)
+        try:
+            result = self._run_effect(decision.action, decision.args)
+        except SandboxContainmentError as exc:
+            return self._handle_containment_failure(
+                principal=principal, action=decision.action, args=decision.args,
+                risk=decision.risk, exc=exc, approval_id=approval_id)
         self.idempotency.remember(key, result)
         self.approvals.mark_executed(approval_id)
         self.audit.record(actor=principal.name, action=decision.action,

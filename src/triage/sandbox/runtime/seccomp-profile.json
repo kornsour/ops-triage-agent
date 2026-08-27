@@ -1,0 +1,29 @@
+{
+  "_comment": "Deny-list seccomp profile for ContainerSandbox action containers. Default action is ALLOW (the container only ever runs a fixed, trusted Python entrypoint against a stock base image, not arbitrary code) with an explicit ERRNO block on syscall groups a guarded-action effect has no legitimate reason to call: namespace/mount manipulation, kernel module loading, raw process tracing/injection, direct kernel memory or module access, and system-control operations (reboot, swap, time). Combined with --cap-drop=ALL, --security-opt no-new-privileges, a non-root user, and a read-only root filesystem, most of these are already unreachable without CAP_SYS_ADMIN/CAP_SYS_MODULE/etc.; blocking the syscalls too is defence in depth against a kernel bug that makes a 'dropped' capability check bypassable. A stricter default-deny allowlist (Docker's own default profile is one) is the natural next hardening step for a production deployment -- see docs/sandbox.md.",
+  "defaultAction": "SCMP_ACT_ALLOW",
+  "architectures": ["SCMP_ARCH_X86_64", "SCMP_ARCH_AARCH64"],
+  "syscalls": [
+    {
+      "names": [
+        "mount", "umount", "umount2", "pivot_root", "chroot",
+        "unshare", "setns",
+        "reboot", "kexec_load", "kexec_file_load",
+        "init_module", "finit_module", "delete_module",
+        "swapon", "swapoff",
+        "ptrace", "process_vm_readv", "process_vm_writev",
+        "perf_event_open",
+        "open_by_handle_at",
+        "acct",
+        "add_key", "request_key", "keyctl",
+        "settimeofday", "clock_settime", "clock_adjtime", "adjtimex",
+        "sethostname", "setdomainname",
+        "syslog",
+        "bpf",
+        "userfaultfd",
+        "clone3"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    }
+  ]
+}

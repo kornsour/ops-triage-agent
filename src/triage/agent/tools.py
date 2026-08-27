@@ -56,6 +56,15 @@ class ReadTools:
 
 
 # --- Guarded-action effects (the simulated downstream system) ---------------
+#
+# `ACTION_EFFECTS` is kept for its membership checks (`action in
+# ACTION_EFFECTS`, used by the runner and tests to validate a recommended
+# action name) and as the reference implementation these effects started
+# from. `ActionExecutor` itself no longer calls these functions directly —
+# every effect now runs through a `triage.sandbox.Sandbox` (see
+# `triage.sandbox.effects.PURE_ACTION_EFFECTS`, the identical business logic
+# with the `db` parameter dropped, since nothing sandboxed gets a database
+# handle). See docs/sandbox.md.
 
 ACTION_TOOLS = {
     "reset_password": ToolSpec(

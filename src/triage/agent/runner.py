@@ -48,7 +48,7 @@ class TriageResult:
     run_id: str
     ticket_id: str
     # completed | ungrounded | needs_approval | denied | auth_error | budget_exceeded
-    # | step_budget_exceeded
+    # | step_budget_exceeded | action_contained
     status: str
     category: str
     severity: str
@@ -250,6 +250,15 @@ class TriageRunner:
                         status = "needs_approval"
                     elif res["status"] == "denied":
                         status = "denied"
+                    elif res["status"] == "contained":
+                        # The sandbox boundary — not the approval policy —
+                        # is why nothing executed: timed out, killed, or
+                        # denied before it ran. See triage.sandbox and
+                        # docs/sandbox.md. `action["status"]` already carries
+                        # the detail (`action["sandbox_status"]`); this just
+                        # keeps the run-level status from misreporting a
+                        # failed action as a plain "completed" triage.
+                        status = "action_contained"
                 except AuthError as exc:
                     action.update({"status": "blocked", "reason": str(exc)})
                     status = "auth_error"

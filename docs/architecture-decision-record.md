@@ -182,3 +182,34 @@ flags the run. The eval harness gates on `injection_defense == 1.0`.
 is surfaced to operators and recorded in the audit trail. This is defence in
 depth; the approval gates remain the primary safety boundary and detection is
 pattern-based, not exhaustive.
+
+---
+
+## ADR-010 — Approval decides *if*; a `Sandbox` interface decides how much damage a wrong yes can do
+
+**Date:** 2026-08-27 · **Status:** accepted
+
+**Context.** ADR-002/003 make execution conditional on auth, approval, and audit —
+but once an action is approved, it ran bare in the agent's own process, with that
+process's filesystem, network, and credentials. Harmless for this repo's simulated
+effects; not harmless the moment an action shells out or calls a real downstream
+system, which is the direction a real deployment goes.
+
+**Decision.** Introduce a small `Sandbox` interface (`action, args -> SandboxResult`)
+that every guarded-action effect now runs through instead of being called
+directly. `InProcessSandbox` — same-process, the pre-existing behavior, just
+routed through the interface — is the default, so the offline `make demo` /
+test-suite path needs no new dependency. `ContainerSandbox` is a real,
+Docker-backed implementation: read-only root filesystem, non-root user, dropped
+capabilities, a seccomp profile, CPU/memory/PID limits, deny-by-default egress
+with a per-action host allowlist, and a wall-clock timeout enforced from the host
+side. A containment failure (timed out / killed / denied) is audited as its own
+outcome — `sandbox_<status>` — distinct from a business-logic exception, and is
+never silently retried. See docs/sandbox.md for the full design.
+
+**Consequences.** Switching a deployment from same-process to a locked-down
+container is a config change (`TRIAGE_SANDBOX_MODE`), not a rewrite of
+`ActionExecutor` or the action effects themselves. The cost is a second runtime
+implementation to maintain and reason about; docs/sandbox.md is explicit about
+what has and hasn't been exercised end-to-end against a live Docker daemon in this
+repo's own CI as of this ADR.
