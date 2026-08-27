@@ -66,7 +66,7 @@ def test_live_openai_golden_ticket_end_to_end(live_settings):
     seed()
     ingest(verbose=False)
 
-    # gold-001 from evals/golden/golden_set.jsonl — a simple, unambiguous case.
+    # gold-001 from evals/benchmarks/golden_set/golden_set.jsonl — a simple, unambiguous case.
     ticket = Ticket(
         id="live-smoke-001",
         subject="Locked out of my account",
