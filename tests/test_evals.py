@@ -74,3 +74,20 @@ def test_workers_must_be_positive(seeded):
 
     with pytest.raises(ValueError):
         run_evals.run(workers=0)
+
+
+def test_p95_is_stable_across_worker_counts(seeded):
+    # p95_latency_ms feeds the CI drift gate, so it must mean the same thing
+    # regardless of `--workers` — that's a CI-speed knob, not a property of
+    # the agent. Case latency is measured as per-case CPU time (see
+    # `run_case`), which is unaffected by GIL/scheduler contention between
+    # concurrent cases, so raising `--workers` must not inflate it the way
+    # wall-clock timing would (observed in CI: workers=4 wall-clock ran
+    # *slower* than the serial estimate for this golden set, and p95 swung
+    # from 3.36ms to 6.28ms to 7.66ms across otherwise-identical runs).
+    sequential = run_evals.run(workers=1)["metrics"]["p95_latency_ms"]
+    concurrent = run_evals.run(workers=8)["metrics"]["p95_latency_ms"]
+    assert concurrent <= max(sequential * 3, 5.0), (
+        f"p95 grew from {sequential}ms (workers=1) to {concurrent}ms (workers=8) — "
+        "looks like latency is picking up scheduler contention again."
+    )

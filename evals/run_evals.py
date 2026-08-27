@@ -45,6 +45,7 @@ from triage.data.seed import seed  # noqa: E402
 from triage.enterprise.approvals import ApprovalStore  # noqa: E402
 from triage.enterprise.audit import AuditLog  # noqa: E402
 from triage.enterprise.auth import Principal, authenticate  # noqa: E402
+from triage.enterprise.ratelimit import TokenBucket  # noqa: E402
 from triage.llm import get_provider  # noqa: E402
 from triage.llm.base import LLMProvider  # noqa: E402
 from triage.rag.ingest import ingest  # noqa: E402
@@ -65,6 +66,20 @@ def ensure_index(settings: Settings) -> None:
         ingest(verbose=False)
 
 
+def build_buckets(settings: Settings) -> dict[str, TokenBucket]:
+    """One `TokenBucket` per configured principal, for the whole eval run.
+
+    Mirrors `ActionExecutor`'s own default (pre-seeded from
+    `parsed_api_keys()`), but built once and handed to every per-case
+    executor — see `run_case`.
+    """
+    return {
+        api_key: TokenBucket(capacity=settings.rate_limit_per_min,
+                             refill_per_sec=settings.rate_limit_per_min / 60.0)
+        for api_key in settings.parsed_api_keys()
+    }
+
+
 def run_case(
     row: dict,
     *,
@@ -72,27 +87,48 @@ def run_case(
     provider: LLMProvider,
     retriever: Retriever,
     principal: Principal,
+    buckets: dict[str, TokenBucket],
 ) -> ScenarioScore:
     """Run one golden-set case against a throwaway, per-case environment.
 
-    Everything stateful (ticket DB, approvals, audit trail, idempotency) is
-    fresh for this call and discarded afterwards, so concurrent cases never
-    observe or mutate each other's state. Only the read-only RAG index and the
-    stateless LLM provider are shared with the caller.
+    Everything stateful *to that case* (ticket DB, approvals, audit trail,
+    idempotency) is fresh for this call and discarded afterwards, so
+    concurrent cases never observe or mutate each other's state. Only the
+    read-only RAG index and the stateless LLM provider are shared with the
+    caller — and `buckets`: rate limiting is a property of the *principal*,
+    not of the case. Letting `ActionExecutor` build its own default buckets
+    here would hand every case a fresh, full-capacity allowance for the same
+    `demo-operator-key` used across the whole golden set, silently defeating
+    the per-principal limit the real system guarantees (see
+    `tests/test_actions.py::test_rate_limit_is_isolated_per_principal`).
+    `TokenBucket.allow()` is internally lock-protected, so sharing these
+    across concurrent worker threads is safe.
+
+    Latency is measured as this thread's own CPU time (`time.thread_time()`),
+    not wall-clock. Under a worker pool, wall-clock time also counts however
+    long this case sat descheduled while sibling cases held the GIL/CPU —
+    contention noise that grows with `--workers` and CI-runner load, not a
+    change in what the agent actually did. CPU time isolates the case's own
+    cost, so `p50`/`p95` mean the same thing at `--workers 1` and `--workers
+    8` and stay meaningful to the drift gate as concurrency (or a noisy CI
+    box) changes — see `test_p95_is_stable_across_worker_counts`.
     """
     with tempfile.TemporaryDirectory(prefix="triage-eval-case-") as tmp:
         tmp_path = Path(tmp)
         db = TicketDB(tmp_path / "triage.db")
         seed(db)
         executor = ActionExecutor(
-            db, AuditLog(tmp_path / "audit.jsonl"), ApprovalStore(tmp_path / "approvals.db")
+            db, AuditLog(tmp_path / "audit.jsonl"), ApprovalStore(tmp_path / "approvals.db"),
+            buckets=buckets,
         )
         runner = TriageRunner(settings=settings, provider=provider, db=db,
                               retriever=retriever, executor=executor)
         ticket = Ticket(id=f"eval-{row['id']}", subject=row["subject"],
                         body=row["body"], requester=row["requester"])
+        cpu_start = time.thread_time()
         result = runner.run(ticket, principal, run_id=f"eval-{row['id']}")
-        return score_scenario(row, result)
+        cpu_ms = (time.thread_time() - cpu_start) * 1000.0
+        return score_scenario(row, result, latency_ms=cpu_ms)
 
 
 def run(workers: int = DEFAULT_WORKERS) -> dict:
@@ -105,17 +141,19 @@ def run(workers: int = DEFAULT_WORKERS) -> dict:
     provider = get_provider(s)
     retriever = Retriever.from_settings(s)
     principal = authenticate("demo-operator-key")
+    # Shared across every case (and every worker thread) — see `run_case`.
+    buckets = build_buckets(s)
 
     wall_start = time.perf_counter()
     if workers == 1:
         # The reproducible reference path: no pool, no thread scheduling.
         scores = [run_case(row, settings=s, provider=provider, retriever=retriever,
-                           principal=principal) for row in rows]
+                           principal=principal, buckets=buckets) for row in rows]
     else:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = [
                 pool.submit(run_case, row, settings=s, provider=provider,
-                           retriever=retriever, principal=principal)
+                           retriever=retriever, principal=principal, buckets=buckets)
                 for row in rows
             ]
             scores = [f.result() for f in as_completed(futures)]
