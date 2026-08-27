@@ -536,6 +536,12 @@ body {
   margin-bottom: 14px;
 }
 
+.callout-bad {
+  background: var(--bad-bg);
+  border: 1px solid var(--bad-border);
+  color: var(--bad);
+}
+
 .callout .mono {
   color: inherit;
 }

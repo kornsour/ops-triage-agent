@@ -35,6 +35,7 @@ export interface Ticket {
 export type TriageStatus =
   | "completed"
   | "needs_approval"
+  | "denied"
   | "auth_error"
   | "budget_exceeded";
 
@@ -47,6 +48,7 @@ export interface TriageAction {
   approval_id?: string;
   risk?: Risk;
   result?: unknown;
+  reason?: string | null;
 }
 
 export interface TriageMetrics {

@@ -1,6 +1,8 @@
 import pytest
 
+from triage.agent.actions import ActionExecutor
 from triage.enterprise.approvals import ApprovalStore
+from triage.enterprise.audit import AuditLog
 from triage.enterprise.auth import AuthError
 
 
@@ -101,3 +103,74 @@ def test_operator_cannot_approve(runner, operator):
                                   args={"email": "dana@acme.com"})
     with pytest.raises(AuthError):
         runner.executor.execute_approved(approval_id=req["approval_id"], principal=operator)
+
+
+def test_denied_replay_reports_denied_with_reason(runner, operator, admin, settings):
+    # An identical re-request of a denied action must surface the denial and
+    # its reason, not silently no-op into a fresh "pending_approval".
+    args = {"email": "sam@acme.com"}
+    req = runner.executor.request(run_id="r10", principal=operator,
+                                  action="reset_password", args=args)
+    assert req["status"] == "pending_approval"
+    approval_id = req["approval_id"]
+
+    store = ApprovalStore(settings.db_path)
+    store.decide(approval_id, approve=False, decided_by=admin.name,
+                 reason="no ticket reference on file")
+
+    replay = runner.executor.request(run_id="r10", principal=operator,
+                                     action="reset_password", args=args)
+    assert replay["status"] == "denied"
+    assert replay["approval_id"] == approval_id
+    assert replay["reason"] == "no ticket reference on file"
+
+    # Still fails closed: a denied approval cannot be executed.
+    with pytest.raises(ValueError):
+        runner.executor.execute_approved(approval_id=approval_id, principal=admin)
+
+
+def test_denied_action_needs_different_args_to_be_raised_again(runner, operator, admin, settings):
+    args = {"email": "sam@acme.com"}
+    req = runner.executor.request(run_id="r11", principal=operator,
+                                  action="reset_password", args=args)
+    store = ApprovalStore(settings.db_path)
+    store.decide(req["approval_id"], approve=False, decided_by=admin.name,
+                 reason="looks like account takeover")
+
+    # A repeat of the exact same request keeps reporting the same denial —
+    # a decision is authoritative for that (action, args) pair, it is not
+    # silently reopened.
+    again = runner.executor.request(run_id="r11", principal=operator,
+                                    action="reset_password", args=args)
+    assert again["status"] == "denied"
+    assert again["approval_id"] == req["approval_id"]
+
+    # A materially different request (e.g. now citing a ticket) hashes to a
+    # different key, so it is a fresh request with its own approval —
+    # unaffected by the earlier denial.
+    new_args = {**args, "ticket_id": "TCK-9001"}
+    fresh = runner.executor.request(run_id="r11", principal=operator,
+                                    action="reset_password", args=new_args)
+    assert fresh["status"] == "pending_approval"
+    assert fresh["approval_id"] != req["approval_id"]
+
+
+def test_executed_approval_replays_even_after_idempotency_cache_is_lost(
+    runner, operator, admin, settings
+):
+    args = {"email": "robin@acme.com", "resource": "billing"}
+    req = runner.executor.request(run_id="r12", principal=operator,
+                                  action="grant_access", args=args)
+    approval_id = req["approval_id"]
+    store = ApprovalStore(settings.db_path)
+    store.decide(approval_id, approve=True, decided_by=admin.name, reason="ok")
+    runner.executor.execute_approved(approval_id=approval_id, principal=admin)
+
+    # Simulate a process restart: a fresh executor has no in-memory
+    # idempotency cache, but the approval decision is persisted in SQLite.
+    fresh_executor = ActionExecutor(
+        runner.db, AuditLog(settings.audit_path), ApprovalStore(settings.db_path)
+    )
+    replay = fresh_executor.request(run_id="r12", principal=operator,
+                                    action="grant_access", args=args)
+    assert replay["status"] == "replayed"

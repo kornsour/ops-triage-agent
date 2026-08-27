@@ -75,6 +75,24 @@ class ActionExecutor:
             return {"status": "replayed", "action": action,
                     "result": self.idempotency.get(key)}
 
+        # A prior request for this exact (action, args) may already have been
+        # decided. `approval_id` is derived from `key`, so an identical
+        # re-request would otherwise silently no-op the INSERT below and get
+        # told "pending" again — even though it was denied, or already
+        # executed on a since-restarted process (idempotency is in-memory,
+        # approvals are persisted). Surface the real outcome instead.
+        existing = self.approvals.get(key)
+        if existing is not None and existing.status == "denied":
+            self.audit.record(actor=principal.name, action=action, target=str(args),
+                              outcome="denied_replay",
+                              metadata={"run_id": run_id, "risk": risk, "approval_id": key,
+                                        "reason": existing.reason})
+            return {"status": "denied", "action": action, "risk": risk,
+                    "approval_id": key, "reason": existing.reason}
+        if existing is not None and existing.status == "executed":
+            return {"status": "replayed", "action": action,
+                    "result": self.idempotency.get(key)}
+
         if auto_approve and not force_approval:
             result = self._run_effect(action, args)
             self.idempotency.remember(key, result)
