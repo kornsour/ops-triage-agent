@@ -48,9 +48,14 @@ SEED_TICKETS = [
 ]
 
 
-def seed() -> TicketDB:
-    s = get_settings()
-    db = TicketDB(s.db_path)
+def seed(db: TicketDB | None = None) -> TicketDB:
+    """Populate `db` with the seed users/tickets (default: the configured DB path).
+
+    Accepting an explicit `db` lets callers seed an isolated, throwaway database
+    (e.g. one per concurrent eval case) without touching `TRIAGE_DB_PATH`.
+    """
+    if db is None:
+        db = TicketDB(get_settings().db_path)
     for email, name, dept, mgr in SEED_USERS:
         db.upsert_user(email, name, dept, mgr)
     for t in SEED_TICKETS:

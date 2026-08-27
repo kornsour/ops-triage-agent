@@ -1,11 +1,22 @@
 """Eval harness — run the agent across the golden set, score it, gate the release.
 
-    python evals/run_evals.py            # run + write a report
-    python evals/run_evals.py --gate     # also enforce quality gates (exit 1 on fail)
+    python evals/run_evals.py               # run + write a report
+    python evals/run_evals.py --gate         # also enforce quality gates (exit 1 on fail)
+    python evals/run_evals.py --workers 8    # run cases concurrently (default: 4)
+    python evals/run_evals.py --workers 1    # sequential reference path
 
 Reports are written to evals/reports/<timestamp>.json and feed drift detection.
 The whole thing runs offline with the deterministic mock provider, so CI is
 hermetic and reproducible.
+
+Cases run concurrently across a bounded worker pool. Each case gets its own
+throwaway ticket DB (seeded fresh), approval store, audit log, and idempotency
+store — nothing about one case's state (actions taken, approvals granted, audit
+entries) is visible to another, so raising `--workers` cannot change *what*
+happens in a case, only how many run at once. Only the read-only pieces (the
+RAG index and the deterministic mock provider) are shared across the pool.
+Scores are sorted by case id before aggregation, so the report is byte-identical
+regardless of worker count — see `tests/test_evals.py`.
 """
 
 from __future__ import annotations
@@ -14,6 +25,8 @@ import argparse
 import json
 import sys
 import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -21,64 +34,113 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from gates import all_passed, evaluate_gates  # noqa: E402
-from scoring import aggregate, score_scenario  # noqa: E402
+from scoring import ScenarioScore, aggregate, score_scenario  # noqa: E402
 
 from triage.agent.actions import ActionExecutor  # noqa: E402
 from triage.agent.prompts import PROMPT_VERSION  # noqa: E402
 from triage.agent.runner import TriageRunner  # noqa: E402
-from triage.config import get_settings  # noqa: E402
+from triage.config import Settings, get_settings  # noqa: E402
 from triage.data.db import Ticket, TicketDB  # noqa: E402
 from triage.data.seed import seed  # noqa: E402
 from triage.enterprise.approvals import ApprovalStore  # noqa: E402
 from triage.enterprise.audit import AuditLog  # noqa: E402
-from triage.enterprise.auth import authenticate  # noqa: E402
+from triage.enterprise.auth import Principal, authenticate  # noqa: E402
 from triage.llm import get_provider  # noqa: E402
+from triage.llm.base import LLMProvider  # noqa: E402
 from triage.rag.ingest import ingest  # noqa: E402
 from triage.rag.retriever import Retriever  # noqa: E402
 from triage.rag.store import VectorStore  # noqa: E402
 
 GOLDEN = HERE / "golden" / "golden_set.jsonl"
 REPORTS = HERE / "reports"
+DEFAULT_WORKERS = 4
 
 
 def load_golden() -> list[dict]:
     return [json.loads(line) for line in GOLDEN.read_text().splitlines() if line.strip()]
 
 
-def build_runner() -> TriageRunner:
-    s = get_settings()
-    if not s.db_path.exists():
-        seed()
-    if not VectorStore.exists(s.index_dir):
+def ensure_index(settings: Settings) -> None:
+    if not VectorStore.exists(settings.index_dir):
         ingest(verbose=False)
-    db = TicketDB(s.db_path)
-    retriever = Retriever.from_settings(s)
-    # Isolated controls so re-running evals is clean (fresh approvals + idempotency).
-    tmp = Path(tempfile.mkdtemp(prefix="triage-eval-"))
-    executor = ActionExecutor(db, AuditLog(tmp / "audit.jsonl"), ApprovalStore(tmp / "approvals.db"))
-    return TriageRunner(settings=s, provider=get_provider(s), db=db,
-                        retriever=retriever, executor=executor)
 
 
-def run() -> dict:
-    rows = load_golden()
-    runner = build_runner()
-    principal = authenticate("demo-operator-key")
-    scores = []
-    for row in rows:
+def run_case(
+    row: dict,
+    *,
+    settings: Settings,
+    provider: LLMProvider,
+    retriever: Retriever,
+    principal: Principal,
+) -> ScenarioScore:
+    """Run one golden-set case against a throwaway, per-case environment.
+
+    Everything stateful (ticket DB, approvals, audit trail, idempotency) is
+    fresh for this call and discarded afterwards, so concurrent cases never
+    observe or mutate each other's state. Only the read-only RAG index and the
+    stateless LLM provider are shared with the caller.
+    """
+    with tempfile.TemporaryDirectory(prefix="triage-eval-case-") as tmp:
+        tmp_path = Path(tmp)
+        db = TicketDB(tmp_path / "triage.db")
+        seed(db)
+        executor = ActionExecutor(
+            db, AuditLog(tmp_path / "audit.jsonl"), ApprovalStore(tmp_path / "approvals.db")
+        )
+        runner = TriageRunner(settings=settings, provider=provider, db=db,
+                              retriever=retriever, executor=executor)
         ticket = Ticket(id=f"eval-{row['id']}", subject=row["subject"],
                         body=row["body"], requester=row["requester"])
         result = runner.run(ticket, principal, run_id=f"eval-{row['id']}")
-        scores.append(score_scenario(row, result))
+        return score_scenario(row, result)
+
+
+def run(workers: int = DEFAULT_WORKERS) -> dict:
+    if workers < 1:
+        raise ValueError(f"workers must be >= 1, got {workers}")
+
+    rows = load_golden()
+    s = get_settings()
+    ensure_index(s)
+    provider = get_provider(s)
+    retriever = Retriever.from_settings(s)
+    principal = authenticate("demo-operator-key")
+
+    wall_start = time.perf_counter()
+    if workers == 1:
+        # The reproducible reference path: no pool, no thread scheduling.
+        scores = [run_case(row, settings=s, provider=provider, retriever=retriever,
+                           principal=principal) for row in rows]
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [
+                pool.submit(run_case, row, settings=s, provider=provider,
+                           retriever=retriever, principal=principal)
+                for row in rows
+            ]
+            scores = [f.result() for f in as_completed(futures)]
+    wall_ms = (time.perf_counter() - wall_start) * 1000.0
+
+    # Collect by case id and sort before scoring — `--workers 8` and
+    # `--workers 1` must produce byte-identical reports.
+    scores.sort(key=lambda x: x.id)
 
     metrics = aggregate(scores)
-    s = get_settings()
+    serial_ms = sum(x.latency_ms for x in scores)
+    saved_ms = max(0.0, serial_ms - wall_ms)
     return {
         "timestamp": datetime.now(UTC).isoformat(),
         "provider": s.llm_provider,
-        "model": runner.provider.model,
+        "model": provider.model,
         "prompt_version": PROMPT_VERSION,
         "metrics": metrics,
+        "concurrency": {
+            "workers": workers,
+            "wall_clock_ms": round(wall_ms, 2),
+            "serial_ms_estimate": round(serial_ms, 2),
+            "wall_clock_saved_ms": round(saved_ms, 2),
+            "speedup_x": round(serial_ms / wall_ms, 2) if wall_ms > 0 else 1.0,
+        },
         "scenarios": [
             {"id": x.id, "expected": x.expected, "predicted": x.predicted,
              "grounded": x.grounded, "gated_correctly": x.safe,
@@ -98,6 +160,7 @@ def write_report(report: dict) -> Path:
 
 def print_summary(report: dict, gate_results=None) -> None:
     m = report["metrics"]
+    c = report["concurrency"]
     print(f"\nEval report — provider={report['provider']} model={report['model']} "
           f"prompt={report['prompt_version']}  (n={m['n']})")
     print("-" * 64)
@@ -105,6 +168,9 @@ def print_summary(report: dict, gate_results=None) -> None:
               "grounding_rate", "approval_safety", "injection_defense", "pass_rate",
               "p50_latency_ms", "p95_latency_ms", "avg_usd"):
         print(f"  {k:24} {m[k]}")
+    print(f"\n  workers={c['workers']}  wall-clock={c['wall_clock_ms']}ms  "
+          f"(serial estimate {c['serial_ms_estimate']}ms, "
+          f"saved {c['wall_clock_saved_ms']}ms, {c['speedup_x']}x)")
     failures = [s for s in report["scenarios"] if not s["passed"]]
     if failures:
         print("\n  failing scenarios:")
@@ -120,9 +186,12 @@ def print_summary(report: dict, gate_results=None) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the triage eval harness.")
     parser.add_argument("--gate", action="store_true", help="enforce quality gates")
+    parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS,
+                        help=f"concurrent workers (default: {DEFAULT_WORKERS}); "
+                             "1 = sequential reference path")
     args = parser.parse_args(argv)
 
-    report = run()
+    report = run(workers=args.workers)
     path = write_report(report)
     gate_results = evaluate_gates(report["metrics"]) if args.gate else None
     print_summary(report, gate_results)

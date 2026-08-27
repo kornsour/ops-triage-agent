@@ -31,3 +31,46 @@ def test_metrics_are_not_a_perfect_score(seeded):
 def test_every_scenario_grounded(seeded):
     report = run_evals.run()
     assert all(s["grounded"] for s in report["scenarios"])
+
+
+def test_concurrent_workers_match_sequential_reference(seeded):
+    # `--workers 8` and `--workers 1` must score, classify, and order every
+    # case identically — collect-by-id-then-sort means a concurrency change
+    # can never quietly reorder the report. Wall-clock latency is the one
+    # thing that legitimately differs: real per-case timings shift under
+    # contention when cases run concurrently, so p50/p95 are excluded from
+    # the identity check (they're still measured per case either way — see
+    # `test_p95_is_per_case_not_wall_clock`).
+    sequential = run_evals.run(workers=1)
+    concurrent = run_evals.run(workers=8)
+
+    def normalize(report):
+        d = {k: v for k, v in report.items() if k not in ("timestamp", "concurrency")}
+        d["metrics"] = {k: v for k, v in d["metrics"].items()
+                        if k not in ("p50_latency_ms", "p95_latency_ms")}
+        return d
+
+    assert normalize(sequential) == normalize(concurrent)
+    assert concurrent["concurrency"]["workers"] == 8
+    assert sequential["concurrency"]["workers"] == 1
+    # Scenario order is deterministic (sorted by case id) regardless of the
+    # order workers happen to finish in.
+    ids = [s["id"] for s in concurrent["scenarios"]]
+    assert ids == sorted(ids)
+
+
+def test_p95_is_per_case_not_wall_clock(seeded):
+    # The gate must keep meaning "the slowest case", not "the whole run got
+    # slower because it now shares a CPU with 7 other cases".
+    report = run_evals.run(workers=8)
+    m = report["metrics"]
+    c = report["concurrency"]
+    assert m["p95_latency_ms"] <= c["wall_clock_ms"]
+    assert m["p95_latency_ms"] < c["serial_ms_estimate"]
+
+
+def test_workers_must_be_positive(seeded):
+    import pytest
+
+    with pytest.raises(ValueError):
+        run_evals.run(workers=0)
