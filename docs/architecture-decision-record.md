@@ -90,9 +90,14 @@ includes adversarial cases the offline classifier gets wrong, so accuracy sits
 below 1.0 and the gates have something to catch. Reports are persisted and
 compared run over run for drift.
 
-**Consequences.** Quality regressions block the merge. The golden set must be
-grown and curated over time; that maintenance is the point, and it mirrors the
-deployment→product feedback loop.
+**Consequences.** Quality regressions block the merge. This is enforced, not
+just advisory: a repository ruleset
+([`.github/rulesets/default-branch.json`](../.github/rulesets/default-branch.json))
+requires the `backend (3.11)`, `backend (3.14)`, and `web` checks — which run
+`make eval-gate` — to pass before a pull request can merge into `main`, so a
+red CI run (including a gate breach) cannot be merged past. The golden set must
+be grown and curated over time; that maintenance is the point, and it mirrors
+the deployment→product feedback loop.
 
 ---
 
