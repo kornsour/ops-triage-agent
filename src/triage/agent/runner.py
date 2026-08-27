@@ -153,7 +153,18 @@ class TriageRunner:
         plan: list[str] = []
         final: dict[str, Any] = {}
         finalized = False
+        budget_exceeded = False
         for i in range(self.settings.max_agent_steps):
+            # Budget guard — checked before every model call, not just after
+            # the loop. A breach here stops the run before the next call is
+            # made and before `final` (and therefore any recommended action)
+            # can be set, so the act phase below never sees one to execute.
+            if (metrics.usd > self.settings.max_usd_per_run
+                    or metrics.total_ms > self.settings.max_latency_ms):
+                budget_exceeded = True
+                trace.append(TraceStep("budget", 0.0,
+                                       {"usd": metrics.usd, "total_ms": metrics.total_ms}))
+                break
             key = f"llm_{i}"
             with timer.step(key):
                 resp = self.provider.complete(messages, json_schema={"type": "object"})
@@ -199,13 +210,24 @@ class TriageRunner:
         # answered, so it gets its own status and never reaches the act phase —
         # it has no vetted recommendation to act on.
         action: dict[str, Any] = {"name": recommended_action, "status": "none"}
-        if not finalized:
+        if budget_exceeded:
+            # The loop was cut short before `final` could be set, so there is
+            # no recommended action to route to the executor — nothing to
+            # skip, the act phase below is simply never reached for this
+            # branch. A budget breach can never coexist with `needs_approval`
+            # / `denied`: those only come from the act phase, which only runs
+            # when finalized is True, which requires *not* having broken out
+            # of the loop on this guard.
+            status = "budget_exceeded"
+        elif not finalized:
             status = "step_budget_exceeded"
         elif not grounded:
             status = "ungrounded"
         else:
             status = "completed"
-        if recommended_action == "post_reply" and not grounded:
+        if budget_exceeded:
+            pass
+        elif recommended_action == "post_reply" and not grounded:
             # post_reply is normally low-risk/auto-approved (see
             # ACTION_POLICY), which would otherwise let a fabricated draft
             # reach the requester untouched. Never route it to the executor.
@@ -233,10 +255,6 @@ class TriageRunner:
                     status = "auth_error"
             trace.append(TraceStep("act", metrics.steps.get("act", 0.0),
                                    {"action": recommended_action, "status": action["status"]}))
-
-        # 3) Budget enforcement.
-        if metrics.usd > self.settings.max_usd_per_run or metrics.total_ms > self.settings.max_latency_ms:
-            status = "budget_exceeded"
 
         result = TriageResult(
             run_id=run_id, ticket_id=ticket.id, status=status,
