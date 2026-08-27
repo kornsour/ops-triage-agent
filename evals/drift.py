@@ -1,19 +1,14 @@
-"""Drift detection — compare two eval reports.
+"""Drift detection — compare the two most recent eval reports, per benchmark.
 
 Catches the silent-degradation failure mode: a prompt tweak or model swap that
 lowers quality without failing an absolute gate. `detect` flags any metric that
-moved beyond tolerance in the wrong direction.
-
-    python evals/drift.py                          # two latest reports in evals/reports/
-    python evals/drift.py prev.json curr.json       # two explicit report paths (used in CI,
-                                                      # where the previous report is restored
-                                                      # from a prior run rather than sitting
-                                                      # on disk next to the new one)
+moved beyond tolerance in the wrong direction; the CLI runs it over the two
+latest reports on disk, benchmark by benchmark (matched by name — a benchmark
+that only exists in one of the two reports is skipped).
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import sys
 from pathlib import Path
@@ -22,6 +17,7 @@ HERE = Path(__file__).resolve().parent
 REPORTS = HERE / "reports"
 
 # metric -> ("higher_better" | "lower_better", tolerance)
+# Applies to any metric with this name in any benchmark's report.
 DIRECTION = {
     "classification_accuracy": ("higher_better", 0.03),
     "severity_accuracy": ("higher_better", 0.03),
@@ -55,44 +51,45 @@ def latest_reports(n: int = 2) -> list[Path]:
     return sorted(REPORTS.glob("*.json"))[-n:]
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("prev", nargs="?", type=Path,
-                         help="earlier report (default: 2nd-most-recent in evals/reports/)")
-    parser.add_argument("curr", nargs="?", type=Path,
-                         help="later report (default: most recent in evals/reports/)")
-    args = parser.parse_args(argv)
-    if bool(args.prev) != bool(args.curr):
-        parser.error("pass both report paths, or neither")
-    return args
+def _benchmarks_by_name(report: dict) -> dict[str, dict]:
+    return {b["name"]: b["metrics"] for b in report.get("benchmarks", [])}
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
-    if args.prev and args.curr:
-        reports = [args.prev, args.curr]
-    else:
-        reports = latest_reports(2)
-        if len(reports) < 2:
-            print(f"Need 2 reports to detect drift; found {len(reports)} in {REPORTS}.")
-            return 0
+def main() -> int:
+    reports = latest_reports(2)
+    if len(reports) < 2:
+        print(f"Need 2 reports to detect drift; found {len(reports)} in {REPORTS}.")
+        return 0
     prev, curr = json.loads(reports[0].read_text()), json.loads(reports[1].read_text())
-    pm, cm = prev["metrics"], curr["metrics"]
+    prev_benchmarks, curr_benchmarks = _benchmarks_by_name(prev), _benchmarks_by_name(curr)
     print(f"Drift: {reports[0].name}  ->  {reports[1].name}")
-    print("-" * 60)
-    regressions = detect(pm, cm)
-    for metric in DIRECTION:
-        if metric not in pm or metric not in cm:
-            continue
-        before, after = pm[metric], cm[metric]
-        flag = "REGRESSION" if metric in regressions else "ok"
-        print(f"  {metric:24} {before} -> {after}  (Δ{after - before:+.4f})  [{flag}]")
-    if regressions:
-        print(f"\nDRIFT DETECTED in: {', '.join(regressions)}", file=sys.stderr)
+
+    any_regressions = False
+    common = sorted(set(prev_benchmarks) & set(curr_benchmarks))
+    if not common:
+        print("No benchmark present in both reports; nothing to compare.")
+        return 0
+
+    for name in common:
+        pm, cm = prev_benchmarks[name], curr_benchmarks[name]
+        print(f"\nbenchmark: {name}")
+        print("-" * 60)
+        regressions = detect(pm, cm)
+        for metric in DIRECTION:
+            if metric not in pm or metric not in cm:
+                continue
+            before, after = pm[metric], cm[metric]
+            flag = "REGRESSION" if metric in regressions else "ok"
+            print(f"  {metric:24} {before} -> {after}  (Δ{after - before:+.4f})  [{flag}]")
+        if regressions:
+            any_regressions = True
+            print(f"\n  DRIFT DETECTED in: {', '.join(regressions)}", file=sys.stderr)
+
+    if any_regressions:
         return 1
     print("\nNo drift beyond tolerance.")
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))
+    raise SystemExit(main())

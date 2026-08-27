@@ -1,7 +1,13 @@
-"""Eval harness — run the agent across the golden set, score it, gate the release.
+"""Eval harness — discover registered benchmarks, run each against the agent,
+score them, and gate the release.
 
-    python evals/run_evals.py            # run + write a report
-    python evals/run_evals.py --gate     # also enforce quality gates (exit 1 on fail)
+    python evals/run_evals.py                    # run every benchmark + write a report
+    python evals/run_evals.py --gate              # also enforce quality gates (exit 1 on fail)
+    python evals/run_evals.py --benchmark golden_set  # run just one benchmark (repeatable)
+
+A benchmark is a directory under evals/benchmarks/<name>/ with a benchmark.toml
+declaring its dataset, scorers, and gates — see registry.py and docs/evals.md.
+Adding one is a new directory, not an edit to this file.
 
 Reports are written to evals/reports/<timestamp>.json and feed drift detection.
 The whole thing runs offline with the deterministic mock provider, so CI is
@@ -14,14 +20,16 @@ import argparse
 import json
 import sys
 import tempfile
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from gates import all_passed, evaluate_gates  # noqa: E402
-from scoring import aggregate, score_scenario  # noqa: E402
+from gates import evaluate_gates  # noqa: E402
+from registry import Benchmark, discover_benchmarks  # noqa: E402
+from scoring import aggregate, score_case  # noqa: E402
 
 from triage.agent.actions import ActionExecutor  # noqa: E402
 from triage.agent.prompts import PROMPT_VERSION  # noqa: E402
@@ -31,18 +39,13 @@ from triage.data.db import Ticket, TicketDB  # noqa: E402
 from triage.data.seed import seed  # noqa: E402
 from triage.enterprise.approvals import ApprovalStore  # noqa: E402
 from triage.enterprise.audit import AuditLog  # noqa: E402
-from triage.enterprise.auth import authenticate  # noqa: E402
+from triage.enterprise.auth import Principal, authenticate  # noqa: E402
 from triage.llm import get_provider  # noqa: E402
 from triage.rag.ingest import ingest  # noqa: E402
 from triage.rag.retriever import Retriever  # noqa: E402
 from triage.rag.store import VectorStore  # noqa: E402
 
-GOLDEN = HERE / "golden" / "golden_set.jsonl"
 REPORTS = HERE / "reports"
-
-
-def load_golden() -> list[dict]:
-    return [json.loads(line) for line in GOLDEN.read_text().splitlines() if line.strip()]
 
 
 def build_runner() -> TriageRunner:
@@ -60,31 +63,56 @@ def build_runner() -> TriageRunner:
                         retriever=retriever, executor=executor)
 
 
-def run() -> dict:
-    rows = load_golden()
+def run_benchmark(benchmark: Benchmark, runner: TriageRunner, principal: Principal) -> dict:
+    cases = benchmark.load_cases()
+    per_case = []
+    scenarios = []
+    for case in cases:
+        ticket = Ticket(id=f"{benchmark.name}-{case['id']}", subject=case.get("subject", ""),
+                        body=case.get("body", ""), requester=case.get("requester", ""))
+        result = runner.run(ticket, principal, run_id=f"{benchmark.name}-{case['id']}")
+        row = score_case(case, result)
+        per_case.append(row)
+        scenarios.append({
+            "id": case["id"],
+            "expected": case.get("expected", {}),
+            "predicted": {
+                "category": result.category,
+                "severity": result.severity,
+                "action": result.action.get("name") or None,
+                "action_status": result.action.get("status"),
+            },
+            "passed": bool(row.get("overall_pass", True)),
+        })
+
+    metrics = aggregate(benchmark, per_case)
+    gate_results = evaluate_gates(benchmark, metrics)
+    return {
+        "name": benchmark.name,
+        "config": str(benchmark.config_path.relative_to(HERE)),
+        "metrics": metrics,
+        "gates": [asdict(g) for g in gate_results],
+        "scenarios": scenarios,
+    }
+
+
+def run(benchmarks: list[Benchmark] | None = None) -> dict:
+    if benchmarks is None:
+        benchmarks = discover_benchmarks()
+    if not benchmarks:
+        raise RuntimeError(f"no benchmarks registered under {HERE / 'benchmarks'}")
+
     runner = build_runner()
     principal = authenticate("demo-operator-key")
-    scores = []
-    for row in rows:
-        ticket = Ticket(id=f"eval-{row['id']}", subject=row["subject"],
-                        body=row["body"], requester=row["requester"])
-        result = runner.run(ticket, principal, run_id=f"eval-{row['id']}")
-        scores.append(score_scenario(row, result))
+    results = [run_benchmark(b, runner, principal) for b in benchmarks]
 
-    metrics = aggregate(scores)
     s = get_settings()
     return {
         "timestamp": datetime.now(UTC).isoformat(),
         "provider": s.llm_provider,
         "model": runner.provider.model,
         "prompt_version": PROMPT_VERSION,
-        "metrics": metrics,
-        "scenarios": [
-            {"id": x.id, "expected": x.expected, "predicted": x.predicted,
-             "grounded": x.grounded, "gated_correctly": x.safe,
-             "injection_handled": x.injection_handled, "passed": x.passed}
-            for x in scores
-        ],
+        "benchmarks": results,
     }
 
 
@@ -96,40 +124,59 @@ def write_report(report: dict) -> Path:
     return path
 
 
-def print_summary(report: dict, gate_results=None) -> None:
-    m = report["metrics"]
+def print_summary(report: dict, gated: bool) -> None:
     print(f"\nEval report — provider={report['provider']} model={report['model']} "
-          f"prompt={report['prompt_version']}  (n={m['n']})")
-    print("-" * 64)
-    for k in ("classification_accuracy", "severity_accuracy", "action_accuracy",
-              "grounding_rate", "approval_safety", "injection_defense", "pass_rate",
-              "p50_latency_ms", "p95_latency_ms", "avg_usd"):
-        print(f"  {k:24} {m[k]}")
-    failures = [s for s in report["scenarios"] if not s["passed"]]
-    if failures:
-        print("\n  failing scenarios:")
-        for f in failures:
-            print(f"    {f['id']}: expected={f['expected']} predicted={f['predicted']}")
-    if gate_results is not None:
-        print("\n  gates:")
-        for g in gate_results:
-            flag = "PASS" if g.ok else "FAIL"
-            print(f"    [{flag}] {g.name} = {g.value} ({g.kind} {g.threshold})")
+          f"prompt={report['prompt_version']}")
+    for b in report["benchmarks"]:
+        m = b["metrics"]
+        print("=" * 64)
+        print(f"benchmark: {b['name']}  (config={b['config']}, n={m['n']})")
+        print("-" * 64)
+        for k, v in m.items():
+            if k == "n":
+                continue
+            print(f"  {k:24} {v}")
+        failures = [s for s in b["scenarios"] if not s["passed"]]
+        if failures:
+            print("\n  failing scenarios:")
+            for f in failures:
+                print(f"    {f['id']}: expected={f['expected']} predicted={f['predicted']}")
+        if gated:
+            print("\n  gates:")
+            for g in b["gates"]:
+                flag = "PASS" if g["ok"] else "FAIL"
+                print(f"    [{flag}] {g['name']} = {g['value']} ({g['kind']} {g['threshold']})")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the triage eval harness.")
     parser.add_argument("--gate", action="store_true", help="enforce quality gates")
+    parser.add_argument("--benchmark", action="append", dest="benchmarks", metavar="NAME",
+                         help="run only this benchmark (repeatable); default: all registered")
     args = parser.parse_args(argv)
 
-    report = run()
+    all_benchmarks = discover_benchmarks()
+    if args.benchmarks:
+        by_name = {b.name: b for b in all_benchmarks}
+        missing = [n for n in args.benchmarks if n not in by_name]
+        if missing:
+            print(f"unknown benchmark(s): {', '.join(missing)} "
+                  f"(available: {', '.join(sorted(by_name)) or 'none'})", file=sys.stderr)
+            return 2
+        selected = [by_name[n] for n in args.benchmarks]
+    else:
+        selected = all_benchmarks
+
+    report = run(selected)
     path = write_report(report)
-    gate_results = evaluate_gates(report["metrics"]) if args.gate else None
-    print_summary(report, gate_results)
+    print_summary(report, gated=args.gate)
     print(f"\nreport written: {path.relative_to(Path.cwd()) if path.is_relative_to(Path.cwd()) else path}")
 
-    if args.gate and not all_passed(gate_results):
-        print("\nGATE FAILED — quality regression detected.", file=sys.stderr)
+    failed_benchmarks = [b["name"] for b in report["benchmarks"]
+                          if not all(g["ok"] for g in b["gates"])]
+    if args.gate and failed_benchmarks:
+        print(f"\nGATE FAILED — quality regression detected in: {', '.join(failed_benchmarks)}.",
+              file=sys.stderr)
         return 1
     return 0
 
