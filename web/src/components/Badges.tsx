@@ -28,6 +28,7 @@ const STATUS_CLASS: Record<string, string> = {
   denied: "status-bad",
   auth_error: "status-bad",
   budget_exceeded: "status-bad",
+  step_budget_exceeded: "status-bad",
 };
 
 export function StatusBadge({ status }: { status: string }) {

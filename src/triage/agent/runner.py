@@ -44,7 +44,8 @@ class TraceStep:
 class TriageResult:
     run_id: str
     ticket_id: str
-    status: str  # completed | needs_approval | denied | auth_error | budget_exceeded
+    # completed | needs_approval | denied | auth_error | budget_exceeded | step_budget_exceeded
+    status: str
     category: str
     severity: str
     summary: str
@@ -147,6 +148,7 @@ class TriageRunner:
         retrieved_ids: list[str] = []
         plan: list[str] = []
         final: dict[str, Any] = {}
+        finalized = False
         for i in range(self.settings.max_agent_steps):
             key = f"llm_{i}"
             with timer.step(key):
@@ -175,6 +177,7 @@ class TriageRunner:
             trace.append(TraceStep("respond", metrics.steps[key],
                                    {"citations": final.get("citations", []),
                                     "confidence": final.get("confidence", 0.0)}))
+            finalized = True
             break
 
         category = final.get("category", "general")
@@ -186,9 +189,12 @@ class TriageRunner:
         grounded = bool(citations) and set(citations).issubset(set(retrieved_ids))
 
         # 2) Act — route any guarded action through the enterprise-controls executor.
+        # An agent that exhausted its step budget without emitting `final` never
+        # answered, so it gets its own status and never reaches the act phase —
+        # it has no vetted recommendation to act on.
         action: dict[str, Any] = {"name": recommended_action, "status": "none"}
-        status = "completed"
-        if recommended_action in ACTION_EFFECTS:
+        status = "completed" if finalized else "step_budget_exceeded"
+        if finalized and recommended_action in ACTION_EFFECTS:
             args = _action_args(recommended_action, ticket, category, draft_reply)
             action["args"] = args
             with timer.step("act"):
