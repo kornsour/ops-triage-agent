@@ -31,6 +31,8 @@ const STATUS_CLASS: Record<string, string> = {
   budget_exceeded: "status-bad",
   ungrounded: "status-bad",
   step_budget_exceeded: "status-bad",
+  contained: "status-bad",
+  action_contained: "status-bad",
 };
 
 export function StatusBadge({ status }: { status: string }) {

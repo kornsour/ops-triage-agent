@@ -182,6 +182,20 @@ reports is skipped), and flags any metric that moved beyond tolerance in the
 wrong direction. Tolerances are declared in `evals/drift.py::DIRECTION`, keyed
 by metric name, and apply to that metric in any benchmark's report.
 
+## Sandbox containment cases
+
+This registry scores *triage quality* — did the agent classify, ground, and
+gate the right action for a given ticket. Whether the sandbox boundary around
+that action's effect actually holds (a hostile probe's file read blocked, an
+un-allowlisted network call refused, a wall-clock timeout enforced) is a
+different question with a different shape: it's about a fixed execution
+runtime under adversarial input, not about scoring an LLM's output against a
+labeled dataset, so it doesn't have a `category_match`/`grounded`-style
+per-case metric to aggregate. Those cases live as ordinary tests instead —
+`tests/test_sandbox.py`, gated behind a real Docker health check — each
+asserting the specific containment property the boundary is supposed to
+guarantee. See docs/sandbox.md.
+
 ## The golden set as reference
 
 `evals/benchmarks/golden_set/` is the existing hand-labeled suite, migrated to

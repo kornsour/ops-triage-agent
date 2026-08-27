@@ -27,10 +27,14 @@ deployed inside their environment.
                               └─────────┼────────────────────┼───────────┘
                                         ▼                    ▼
                                 ┌──────────────┐    ┌──────────────────┐
-                                │ vector store │    │ downstream systems│
-                                │ + ticket DB  │    │ (IdP, ticketing,  │
-                                │ (SQLite)     │    │  notifications)   │
-                                └──────────────┘    └──────────────────┘
+                                │ vector store │    │ Sandbox boundary  │
+                                │ + ticket DB  │    │ (in-process, or a │
+                                │ (SQLite)     │    │ locked-down       │
+                                └──────────────┘    │ per-action        │
+                                                     │ container) ───────┼──▶ downstream
+                                                     └──────────────────┘    systems
+                                                                              (IdP, ticketing,
+                                                                               notifications)
                                         ▲
                                 ┌───────┴────────┐
                                 │ LLM provider   │
@@ -55,11 +59,15 @@ deployed inside their environment.
    citation not in the set the tools actually returned; if that leaves no valid
    citation, the run's `status` is `ungrounded`.
 4. **Act.** Any recommended guarded action is routed through the
-   `ActionExecutor`: auth → rate limit → idempotency → approval policy → retry →
-   audit. Low-risk actions auto-execute; medium/high-risk actions — and any action
-   from a run flagged for injection — return `pending_approval`. The exception is
-   `post_reply` on an `ungrounded` run: it is suppressed before it ever reaches
-   the executor, so a fabricated draft is never posted to the requester.
+   `ActionExecutor`: auth → rate limit → idempotency → approval policy → sandbox →
+   retry → audit. Low-risk actions auto-execute; medium/high-risk actions — and
+   any action from a run flagged for injection — return `pending_approval`. The
+   exception is `post_reply` on an `ungrounded` run: it is suppressed before it
+   ever reaches the executor, so a fabricated draft is never posted to the
+   requester. Whichever path an action takes, its *effect* runs behind a
+   `Sandbox` boundary rather than bare in the agent's process — see
+   [`docs/sandbox.md`](sandbox.md) — and a containment failure (timed out,
+   killed, denied) is its own audited outcome, not a silent retry.
 5. **Approve (separate request).** An admin approves via the UI/MCP; the executor
    runs the effect once (idempotent) and writes the execution to the audit chain.
 6. **Observe.** Latency per step, token usage, and USD cost are recorded on the
@@ -77,6 +85,7 @@ deployed inside their environment.
 | Idempotency store | SQLite | Postgres (same instance as the ticket DB) / Redis with a durable backstop |
 | AuthN/Z | API-key → role | OIDC / SSO + fine-grained RBAC |
 | Audit | hash-chained JSONL | append-only store / WORM bucket, periodic anchoring |
+| Action sandbox | in-process (`InProcessSandbox`) | Docker (`ContainerSandbox`, already implemented — see docs/sandbox.md) / gVisor / a managed micro-VM runtime |
 | Transport | FastAPI + MCP stdio | same + MCP over HTTP, gateway, mTLS |
 
 Every swap is behind an interface the rest of the system already depends on, so
@@ -89,7 +98,10 @@ it is a configuration/adapter change, not a rewrite.
 - **Human-in-the-loop** for any identity/access mutation.
 - **Untrusted input** — ticket content is treated as data, not instructions;
   injection attempts are flagged and force actions to approval.
-- **Tamper-evident audit** of every request, decision, and execution.
+- **Tamper-evident audit** of every request, decision, and execution — including
+  a sandboxed action's containment outcome (timed out / killed / denied).
+- **Execution isolation.** An approved action's effect runs behind a `Sandbox`
+  boundary, not bare in the agent's process — see docs/sandbox.md.
 - **Idempotency** so retries and re-runs never double-apply an effect.
 - **Data lineage** on every retrieved document (source, hash, ingest time,
   review age), with stale-content warnings.
@@ -117,3 +129,4 @@ it is a configuration/adapter change, not a rewrite.
 | Stale runbook | ingestion lineage surfaces a staleness warning |
 | Prompt injection in a ticket | guardrail flags the run and forces actions to approval |
 | Audit tampering | chain verification detects edits/reorder/deletion |
+| Action effect misbehaves / hangs / calls an unauthorized host | sandbox boundary: wall-clock timeout, resource limits, deny-by-default egress — see docs/sandbox.md |

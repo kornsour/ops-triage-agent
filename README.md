@@ -131,20 +131,22 @@ src/triage/
 ├── rag/            embeddings · cosine vector store · ingestion governance · retriever
 ├── enterprise/     auth · approval gates · hash-chained audit · idempotency · rate limit · retry · guardrails
 ├── agent/          tool registry · guarded-action executor · tool-calling loop · run orchestrator
+├── sandbox/        execution boundary for approved actions: in-process | locked-down container
 ├── data/           SQLite ticket store + seed queue
 ├── observability/  structured logging · latency/cost/token metrics
 └── api/            FastAPI backend
 mcp_server/         MCP server exposing the enterprise tools with controls
 evals/              benchmark registry · pluggable scorers · config-driven gates · drift detection
 web/                React + TypeScript dashboard
-docs/               architecture decision record · reference architecture · solution brief · data governance · eval harness
+docs/               architecture decision record · reference architecture · solution brief · data governance · eval harness · sandbox design
 knowledge_base/     runbooks (the RAG corpus)
 ```
 
 See [`docs/reference-architecture.md`](docs/reference-architecture.md) for the
 full design, [`docs/architecture-decision-record.md`](docs/architecture-decision-record.md)
-for the key decisions and trade-offs, and
-[`docs/solution-brief.md`](docs/solution-brief.md) for a one-page framing.
+for the key decisions and trade-offs, [`docs/sandbox.md`](docs/sandbox.md) for the
+action-execution boundary, and [`docs/solution-brief.md`](docs/solution-brief.md)
+for a one-page framing.
 
 [`docs/archive/`](docs/archive/) holds superseded documentation and historical
 records only — it does not reflect the current state of the project and should
@@ -162,9 +164,15 @@ Every side-effect passes through a single guarded-action executor that enforces:
   attempts; a hit forces every action from that run through human approval.
 - **Idempotency** — identical `(action, args)` executes once and replays after.
 - **Rate limiting** — per-principal token bucket protects downstream systems.
+- **Sandboxing** — the effect itself runs behind a `Sandbox` interface, not bare
+  in the agent's process; `TRIAGE_SANDBOX_MODE=container` runs it in a locked
+  -down, short-lived container with a read-only filesystem, a non-root user,
+  dropped capabilities, a seccomp profile, resource limits, and deny-by-default
+  egress. See [`docs/sandbox.md`](docs/sandbox.md).
 - **Retries** — bounded exponential backoff around flaky downstream effects.
 - **Audit trail** — append-only, hash-chained, tamper-evident; `verify()` detects
-  any edit, reorder, or deletion.
+  any edit, reorder, or deletion — including a sandbox timing out, being killed,
+  or denying an action outright.
 
 ## Notes on scope
 

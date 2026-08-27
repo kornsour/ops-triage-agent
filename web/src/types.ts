@@ -39,7 +39,11 @@ export type TriageStatus =
   | "denied"
   | "auth_error"
   | "budget_exceeded"
-  | "step_budget_exceeded";
+  | "step_budget_exceeded"
+  // The sandbox boundary (see docs/sandbox.md), not the approval policy, is
+  // why the recommended action didn't execute: timed out, was killed, or
+  // was denied before it ran.
+  | "action_contained";
 
 export type ActionStatus = string;
 
