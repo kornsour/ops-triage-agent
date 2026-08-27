@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   backend:
@@ -86,3 +87,28 @@ jobs:
         run: |
           npm install
           npm run build
+
+  # Opt-in — never runs on push/PR, only when manually dispatched. Exercises
+  # the real OpenAI adapter against a live model, which the hermetic `backend`
+  # job above deliberately never does (see tests/test_live_smoke.py).
+  live-smoke:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[dev,openai]"
+
+      - name: Live-model smoke test
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: pytest tests/test_live_smoke.py -v

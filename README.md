@@ -164,6 +164,22 @@ response-mapping is covered by recorded-response tests. Time-per-ticket,
 cost-per-task, and tail latency are tracked on every run, and releases are gated
 by evals so quality does not silently regress.
 
+The recorded-response tests prove the adapters map a real SDK's response shape
+correctly, but they never prove a real model actually follows the JSON contract
+in `AGENT_SYSTEM` (`triage/agent/prompts.py`). `tests/test_live_smoke.py` closes
+that gap: an opt-in test, skipped unless `OPENAI_API_KEY` is set, that runs one
+golden ticket end to end through the real `OpenAIProvider` and asserts the loop
+converges on a parseable `final` with a valid category, severity, and action.
+Run it deliberately:
+
+```bash
+OPENAI_API_KEY=sk-... pytest tests/test_live_smoke.py -v
+```
+
+or dispatch the `live-smoke` job manually from the Actions tab (`workflow_dispatch`
+on `ci.yml`), which needs an `OPENAI_API_KEY` repo/org secret. It never runs on
+an ordinary push or PR, so it adds no cost or flakiness to the normal pipeline.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
