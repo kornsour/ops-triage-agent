@@ -42,6 +42,27 @@ class _FabricatorProvider:
         return LLMResponse(text=text, usage=usage, model=self.model, raw=payload)
 
 
+class _BudgetBustingProvider:
+    """A stub provider that always asks for another tool call and reports a
+    per-call cost far above `max_usd_per_run` — a runaway loop that would
+    keep calling out to the model (and racking up real spend) if nothing
+    checked the budget between turns."""
+
+    model = "stub-budget-buster"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def complete(self, messages, *, temperature=0.0, max_tokens=1024, json_schema=None):
+        self.calls += 1
+        payload = {
+            "reasoning": "still gathering context",
+            "tool_calls": [{"name": "search_runbooks", "args": {"query": "still looking"}}],
+        }
+        usage = Usage(input_tokens=1, output_tokens=1, usd=10.0)
+        return LLMResponse(text=json.dumps(payload), usage=usage, model=self.model, raw=payload)
+
+
 class _NeverFinalizingProvider:
     """A stub provider that always asks for another tool call and never
     emits `final` — the ordinary failure mode of a real model that never
@@ -147,6 +168,27 @@ def test_step_budget_exceeded_when_model_never_finalizes(seeded, operator):
     # Every step-budget turn reasoned about a tool call; none reached "respond".
     assert [s.step for s in result.trace].count("reason") == seeded.max_agent_steps
     assert result.metrics["llm_calls"] == seeded.max_agent_steps
+
+
+def test_budget_exceeded_stops_loop_before_next_call_and_no_action_requested(
+    seeded, operator
+):
+    from triage.agent.runner import TriageRunner
+
+    provider = _BudgetBustingProvider()
+    budget_runner = TriageRunner(settings=seeded, provider=provider)
+    result = budget_runner.run(_ticket(budget_runner.db, "TCK-1001"), operator)
+
+    assert result.status == "budget_exceeded"
+    # The first call already busts the budget; the guard at the top of the
+    # next loop iteration must stop the run before a second call is made.
+    assert provider.calls == 1
+    assert result.metrics["llm_calls"] == 1
+    # No `final` was ever produced, so there is nothing to route to the
+    # executor -- the act phase never runs and no action reaches it.
+    assert result.action["name"] is None
+    assert result.action["status"] == "none"
+    assert all(step.step != "act" for step in result.trace)
 
 
 def test_viewer_cannot_request_action(runner, viewer):
