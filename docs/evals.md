@@ -11,7 +11,16 @@ directory and a config file. Nothing in `evals/*.py` changes.
 python evals/run_evals.py                         # run every registered benchmark
 python evals/run_evals.py --gate                   # also enforce gates (exit 1 on failure)
 python evals/run_evals.py --benchmark golden_set    # run just one (repeatable flag)
+python evals/run_evals.py --workers 8               # run each benchmark's cases concurrently (default: 4)
+python evals/run_evals.py --workers 1               # sequential reference path
 ```
+
+Cases within a benchmark run across a bounded worker pool, each in its own
+throwaway ticket DB/approvals/audit/idempotency store, so raising `--workers`
+only changes how many cases run at once, never what happens in any one case.
+Per-case latency is measured as that case's own CPU time rather than
+wall-clock, so `p50`/`p95` (and the report) are unaffected by worker count —
+see `evals/run_evals.py::run_case` and `tests/test_evals.py`.
 
 ## Anatomy of a benchmark
 

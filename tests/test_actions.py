@@ -22,7 +22,15 @@ def executor(settings):
     db = TicketDB(settings.db_path)
     audit = AuditLog(settings.audit_path)
     approvals = ApprovalStore(settings.db_path)
-    return ActionExecutor(db, audit, approvals)
+    # `ratelimit.py` is explicit that time is injected so tests don't depend on
+    # real elapsed time — but the default `now_fn` here was `time.time`, so the
+    # rate-limit test below raced the wall clock: on a loaded CI box, the real
+    # seconds elapsed across `capacity` back-to-back calls could refill enough
+    # of the bucket for the "still over the limit" call to slip through
+    # (observed as a flaky "DID NOT RAISE RateLimitExceeded" in CI). Freeze the
+    # clock so bucket state depends only on call count, never on how fast the
+    # test happens to run.
+    return ActionExecutor(db, audit, approvals, now_fn=lambda: 0.0)
 
 
 def _close_ticket(executor, principal, tag):
