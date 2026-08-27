@@ -92,6 +92,13 @@ breaching an absolute gate is still flagged.
 
 ![Eval report — metrics and per-scenario results](docs/img/evals.png)
 
+**Branch protection** — a repository ruleset
+([`.github/rulesets/default-branch.json`](.github/rulesets/default-branch.json))
+requires the `backend (3.11)`, `backend (3.14)`, and `web` CI checks — the
+`backend` matrix includes the eval gate — to pass before a pull request can
+merge into `main`, so a gate breach blocks the merge rather than just failing
+the run.
+
 ## Quickstart
 
 ```bash
