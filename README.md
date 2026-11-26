@@ -7,7 +7,7 @@
 [![CI](https://github.com/kornsour/ops-triage-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/kornsour/ops-triage-agent/actions/workflows/ci.yml)
 &nbsp;Python 3.14 (runs on 3.11+) · FastAPI · React/TypeScript · MCP · runs fully offline (no API key required)
 
-**[Live demo →](https://kornsour.github.io/ops-triage-agent/)** — the operator console running against an in-browser mock (no backend); click a ticket, watch the injection run, browse the eval report.
+**[Live demo →](https://lurking-walrus.github.io/ops-triage-agent/)** — the operator console running against an in-browser mock (no backend); click a ticket, watch the injection run, browse the eval report.
 
 ---
 

@@ -65,7 +65,7 @@ crashing — switch roles and retry.
 
 Built with `VITE_DEMO=1`, the console runs against an **in-browser mock** instead
 of the `/api` backend, so it can be hosted as a static site with no server — see
-the [live demo](https://kornsour.github.io/ops-triage-agent/). The mock
+the [live demo](https://lurking-walrus.github.io/ops-triage-agent/). The mock
 ([`src/demo/mockApi.ts`](src/demo/mockApi.ts)) is backed by fixtures
 ([`src/demo/fixtures.json`](src/demo/fixtures.json)) generated from the real
 backend; approvals mutate in-memory so the approve/deny flow stays live.
